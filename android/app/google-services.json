@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "886773009345",
+    "project_id": "huella2",
+    "storage_bucket": "huella2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:886773009345:android:69090e2f5032b3ad403d40",
+        "android_client_info": {
+          "package_name": "com.fredy.huella"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAgib4vNPI5NcEmHBC76G9tgaZdZHap62o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
