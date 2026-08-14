@@ -5,7 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'chat_screen.dart';
-import 'call_screen.dart'; // Import para la pantalla de llamada cifrada
+import 'call_screen.dart';
 
 class WalkTrackingScreen extends StatefulWidget {
   final String walkId;
@@ -16,7 +16,7 @@ class WalkTrackingScreen extends StatefulWidget {
     super.key,
     required this.walkId,
     required this.ownerId,
-    required this.walkerId
+    required this.walkerId,
   });
 
   @override
@@ -26,6 +26,7 @@ class WalkTrackingScreen extends StatefulWidget {
 class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
   GoogleMapController? _mapController;
 
+  // Coordenadas por defecto (CDMX) solo como fallback inicial
   LatLng _walkerPosition = const LatLng(19.4326, -99.1332);
   LatLng _ownerPosition = const LatLng(19.4326, -99.1332);
 
@@ -36,6 +37,8 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
 
   bool _isMapMode = true;
   double? _distanceToHome;
+  bool _isFirstLocationUpdate = true;
+  bool _locationLoaded = false; // ✅ NUEVO: Para saber si ya cargamos la ubicación real
 
   @override
   void initState() {
@@ -52,25 +55,74 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
     super.dispose();
   }
 
+  // ✅ MEJORADO: Búsqueda inteligente de la ubicación
   Future<void> _loadOwnerLocation() async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(widget.ownerId).get();
-      if (doc.exists && doc.data()?['homeLat'] != null) {
+      double? lat;
+      double? lng;
+
+      // 1. Intentar obtener la ubicación desde el documento del paseo
+      final walkDoc = await FirebaseFirestore.instance.collection('walks').doc(widget.walkId).get();
+      if (walkDoc.exists) {
+        final walkData = walkDoc.data()!;
+        lat = (walkData['pickupLat'] ?? walkData['latitude'] ?? walkData['lat'])?.toDouble();
+        lng = (walkData['pickupLng'] ?? walkData['longitude'] ?? walkData['lng'])?.toDouble();
+      }
+
+      // 2. Si no está en el paseo, intentar obtenerla del perfil del dueño
+      if (lat == null || lng == null) {
+        final userDoc = await FirebaseFirestore.instance.collection('users').doc(widget.ownerId).get();
+        if (userDoc.exists) {
+          final userData = userDoc.data()!;
+          lat = (userData['homeLat'] ?? userData['latitude'] ?? userData['lat'])?.toDouble();
+          lng = (userData['homeLng'] ?? userData['longitude'] ?? userData['lng'])?.toDouble();
+        }
+      }
+
+      // 3. Actualizar el estado y centrar el mapa si encontramos coordenadas válidas
+      if (lat != null && lng != null) {
+        // ✅ TRUCO INFALIBLE: Creamos variables 'double' seguras usando '!'
+        final safeLat = lat!;
+        final safeLng = lng!;
+
         setState(() {
-          _ownerPosition = LatLng(doc['homeLat'], doc['homeLng']);
+          _ownerPosition = LatLng(safeLat, safeLng);
+          _locationLoaded = true;
           _calculateDistance();
         });
+
+        // Centrar el mapa en la ubicación del dueño/pickup
+        if (_mapController != null) {
+          _mapController!.animateCamera(
+            CameraUpdate.newLatLngZoom(LatLng(safeLat, safeLng), 15),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ No se encontró la dirección del paseo en la base de datos'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
       }
     } catch (e) {
-      print('Error cargando ubicación del dueño: $e');
+      print('Error cargando ubicación: $e');
     }
   }
 
   void _calculateDistance() {
-    if (_walkerPosition != const LatLng(19.4326, -99.1332)) {
+    // Evitar cálculos con la posición por defecto si aún no hemos cargado la real
+    if (!_locationLoaded) return;
+
+    if (_walkerPosition.latitude != 19.4326 || _walkerPosition.longitude != -99.1332) {
       final distance = Geolocator.distanceBetween(
-        _ownerPosition.latitude, _ownerPosition.longitude,
-        _walkerPosition.latitude, _walkerPosition.longitude,
+        _ownerPosition.latitude,
+        _ownerPosition.longitude,
+        _walkerPosition.latitude,
+        _walkerPosition.longitude,
       );
       setState(() => _distanceToHome = distance);
     }
@@ -81,22 +133,23 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
       if (!doc.exists || !mounted) return;
 
       final data = doc.data()!;
+
       setState(() {
         _walkStatus = data['status'] ?? 'accepted';
 
         if (data['walkerLat'] != null && data['walkerLng'] != null) {
           final newPos = LatLng(data['walkerLat'], data['walkerLng']);
-
-          if (_walkerPosition == const LatLng(19.4326, -99.1332)) {
-            _walkerPosition = newPos;
-            _mapController?.animateCamera(CameraUpdate.newLatLngZoom(newPos, 16));
-          } else {
-            _walkerPosition = newPos;
-            if (_isMapMode) {
-              _mapController?.animateCamera(CameraUpdate.newLatLng(newPos));
-            }
-          }
+          _walkerPosition = newPos;
           _calculateDistance();
+
+          // Centrar el mapa solo la primera vez que llega la ubicación del paseador
+          if (_isFirstLocationUpdate && _mapController != null) {
+            _mapController!.animateCamera(CameraUpdate.newLatLngZoom(newPos, 16));
+            _isFirstLocationUpdate = false;
+          } else if (_isMapMode && _mapController != null) {
+            // Si ya se centró, solo seguimos la posición suavemente
+            _mapController!.animateCamera(CameraUpdate.newLatLng(newPos));
+          }
         }
 
         if (data['startedAt'] != null) {
@@ -110,7 +163,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
 
   void _startTimer() {
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_startTime != null && _walkStatus != 'completed') {
+      if (_startTime != null && _walkStatus != 'completed' && mounted) {
         setState(() {
           _elapsedSeconds = DateTime.now().difference(_startTime!).inSeconds;
         });
@@ -124,10 +177,17 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
     return '$mins:$secs';
   }
 
+  // ✅ Función para generar el ID del chat ordenado (evita errores de permisos por ID incorrecto)
+  String _getChatId(String id1, String id2) {
+    List<String> ids = [id1, id2];
+    ids.sort();
+    return '${ids[0]}_${ids[1]}';
+  }
+
   Widget _buildTextModeView() {
-    final progress = _elapsedSeconds / 3000;
+    final progress = _elapsedSeconds / 3000; // Asumimos 50 min (3000 seg) como estándar
     final distanceText = _distanceToHome != null
-        ? '${(_distanceToHome! / 1000).toStringAsFixed(1)} km'
+        ? '${(_distanceToHome! / 1000).toStringAsFixed(2)} km'
         : 'Calculando...';
 
     return Center(
@@ -141,7 +201,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.directions_walk, size: 64, color: Colors.deepOrange.shade300),
+                const Icon(Icons.directions_walk, size: 64, color: Colors.deepOrange),
                 const SizedBox(height: 24),
                 Text('Estado del Paseo', style: TextStyle(color: Colors.grey[600], fontSize: 14, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
@@ -159,7 +219,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.location_on_outlined, color: Colors.blue.shade700),
+                      const Icon(Icons.location_on_outlined, color: Colors.blue),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -176,7 +236,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
-                    value: progress > 1 ? 1 : progress,
+                    value: progress > 1 ? 1.0 : progress,
                     backgroundColor: Colors.grey.shade200,
                     color: Colors.deepOrange,
                     minHeight: 12,
@@ -248,7 +308,13 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                   infoWindow: const InfoWindow(title: 'Tu domicilio'),
                 )
               },
-              onMapCreated: (controller) => _mapController = controller,
+              onMapCreated: (controller) {
+                _mapController = controller;
+                // Si la ubicación ya se cargó antes de que el mapa estuviera listo, centrarlo ahora
+                if (_locationLoaded) {
+                  controller.animateCamera(CameraUpdate.newLatLngZoom(_ownerPosition, 15));
+                }
+              },
               myLocationEnabled: false,
               zoomControlsEnabled: true,
             )
@@ -311,8 +377,9 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                   flex: 1,
                   child: ElevatedButton.icon(
                     onPressed: () {
+                      final chatId = _getChatId(widget.ownerId, widget.walkerId);
                       Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(
-                        chatId: '${widget.ownerId}_${widget.walkerId}',
+                        chatId: chatId,
                         currentUserId: widget.ownerId,
                         otherUserId: widget.walkerId,
                         isWalker: false,
@@ -331,27 +398,24 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
 
                 const SizedBox(width: 8),
 
-                // NUEVO: Botón Llamar Cifrado (Corregido)
+                // Botón Llamar Cifrado
                 Expanded(
                   flex: 1,
                   child: ElevatedButton.icon(
                     onPressed: () async {
-                      // Obtener nombre del paseador para mostrarlo en CallScreen
                       final walkerDoc = await FirebaseFirestore.instance
                           .collection('users')
                           .doc(widget.walkerId)
                           .get();
                       final walkerName = walkerDoc.data()?['name'] ?? 'Paseador';
 
-                      // Verificar que seguimos montados después del await
                       if (!mounted) return;
 
-                      // Navegar con los parámetros CORRECTOS
                       Navigator.push(context, MaterialPageRoute(builder: (_) => CallScreen(
-                        callId: widget.walkId,           // ID del paseo como ID de llamada
-                        isCaller: true,                  // El dueño inicia la llamada
-                        otherUserName: walkerName,       // Nombre real del paseador
-                        currentUserId: widget.ownerId,   // ID del dueño actual
+                        callId: widget.walkId,
+                        isCaller: true,
+                        otherUserName: walkerName,
+                        currentUserId: widget.ownerId,
                       )));
                     },
                     icon: const Icon(Icons.phone, size: 18),
@@ -376,17 +440,23 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                         context: context,
                         builder: (_) => AlertDialog(
                           title: const Text('¿Reportar problema?'),
-                          content: const Text('Esto alertará al soporte inmediatamente.'),
+                          content: const Text('Esto alertará al soporte inmediatamente y finalizará el paseo.'),
                           actions: [
                             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
                             ElevatedButton(
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                                onPressed: () {
-                                  FirebaseFirestore.instance.collection('walks').doc(widget.walkId).update({'issueReported': true});
-                                  Navigator.pop(context);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Incidente reportado. Soporte notificado.'), backgroundColor: Colors.red)
-                                  );
+                                onPressed: () async {
+                                  await FirebaseFirestore.instance.collection('walks').doc(widget.walkId).update({
+                                    'issueReported': true,
+                                    'status': 'cancelled_issue',
+                                  });
+                                  if (mounted) {
+                                    Navigator.pop(context);
+                                    Navigator.pop(context); // Regresar a la pantalla anterior
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Incidente reportado. Soporte notificado.'), backgroundColor: Colors.red)
+                                    );
+                                  }
                                 },
                                 child: const Text('Reportar')
                             ),

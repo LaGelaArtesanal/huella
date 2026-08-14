@@ -4,33 +4,51 @@ import '../models/message_model.dart';
 class ChatService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Generar ID único ordenado alfabéticamente
-  String getChatId(String userId1, String userId2) {
-    List<String> ids = [userId1, userId2];
-    ids.sort();
-    return '${ids[0]}_${ids[1]}';
+  Future<void> sendMessage(
+      String chatId,
+      String senderId,
+      String text, {
+        String messageType = 'text',
+      }) async {
+    try {
+      print('📤 Enviando mensaje al chat: $chatId');
+
+      final chatRef = _firestore.collection('chats').doc(chatId);
+
+      // Dividir el chatId para obtener participantes
+      final parts = chatId.split('_');
+      final p1 = parts[0];
+      final p2 = parts.length > 1 ? parts[1] : 'unknown';
+
+      print('👥 Participantes: $p1, $p2');
+
+      // Crear/actualizar el documento del chat
+      await chatRef.set({
+        'participant1Id': p1,
+        'participant2Id': p2,
+        'lastMessage': text,
+        'lastMessageAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      print('✅ Chat actualizado/creado');
+
+      // Agregar el mensaje
+      final messageData = {
+        'senderId': senderId,
+        'text': text,
+        'messageType': messageType,
+        'timestamp': FieldValue.serverTimestamp(),
+      };
+
+      await chatRef.collection('messages').add(messageData);
+      print('✅ Mensaje enviado');
+
+    } catch (e) {
+      print('❌ ERROR AL ENVIAR MENSAJE: $e');
+      rethrow; // Relanzar el error para que lo vea la UI
+    }
   }
 
-  // Enviar mensaje
-  Future<void> sendMessage(String chatId, String senderId, String text, {String messageType = 'text'}) async {
-    await _firestore.collection('chats').doc(chatId).collection('messages').add({
-      'chatId': chatId,
-      'senderId': senderId,
-      'text': text,
-      'timestamp': FieldValue.serverTimestamp(),
-      'isRead': false,
-      'messageType': messageType,
-    });
-
-    // Actualizar metadata del chat
-    await _firestore.collection('chats').doc(chatId).set({
-      'lastMessage': text,
-      'lastMessageTime': FieldValue.serverTimestamp(),
-      'participants': FieldValue.arrayUnion([senderId]),
-    }, SetOptions(merge: true));
-  }
-
-  // Obtener stream de mensajes
   Stream<List<MessageModel>> getMessages(String chatId) {
     return _firestore
         .collection('chats')
@@ -38,8 +56,10 @@ class ChatService {
         .collection('messages')
         .orderBy('timestamp', descending: true)
         .snapshots()
-        .map((snapshot) => snapshot.docs.map((doc) {
-      return MessageModel.fromMap(doc.data(), doc.id);
-    }).toList());
+        .map((snapshot) {
+      return snapshot.docs.map((doc) {
+        return MessageModel.fromMap(doc.data(), doc.id);
+      }).toList();
+    });
   }
 }

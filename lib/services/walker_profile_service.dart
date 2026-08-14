@@ -22,13 +22,27 @@ class WalkerProfileService {
   // Guardar/Actualizar perfil
   Future<bool> saveProfile(WalkerProfileModel profile) async {
     try {
-      await _firestore.collection('walker_profiles').doc(profile.userId).set(
-        profile.toMap(),
-        SetOptions(merge: true),
-      );
+      print('📤 INICIANDO GUARDADO DE PERFIL...');
+      print('   userId: ${profile.userId}');
+      print('   name: ${profile.name}');
+      print('   bio: ${profile.bio}');
+      print('   pricePerWalk: ${profile.pricePerWalk} (tipo: ${profile.pricePerWalk.runtimeType})');
+      print('   latitude: ${profile.latitude}');
+      print('   longitude: ${profile.longitude}');
+
+      final data = profile.toMap();
+      print('   Datos a enviar: $data');
+
+      final docRef = _firestore.collection('walker_profiles').doc(profile.userId);
+      print('   Referencia del documento: ${docRef.path}');
+
+      await docRef.set(data, SetOptions(merge: true));
+
+      print('✅ ¡GUARDADO EXITOSO EN FIREBASE!');
       return true;
-    } catch (e) {
-      print('Error al guardar perfil: $e');
+    } catch (e, stackTrace) {
+      print('❌ ERROR AL GUARDAR: $e');
+      print('   Stack trace: $stackTrace');
       return false;
     }
   }

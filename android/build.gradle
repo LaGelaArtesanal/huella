@@ -1,9 +1,13 @@
 buildscript {
+    // ✅ ESTA VERSIÓN ARREGLA EL BUG DE LECTURA DE JAVA 25.0.2
+    ext.kotlin_version = '2.2.0'
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
+        classpath 'com.android.tools.build:gradle:8.3.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
         classpath 'com.google.gms:google-services:4.4.2'
     }
 }
@@ -12,16 +16,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-    }
-
-    // ✅ FORZAR compileSdk 36 EN TODOS LOS PLUGINS (incluido flutter_webrtc)
-    // Ponerlo dentro de allprojects evita el error de "already evaluated"
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                compileSdkVersion 36
-            }
-        }
     }
 }
 

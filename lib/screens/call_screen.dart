@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // Import faltante
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/call_service.dart';
 
 class CallScreen extends StatefulWidget {
   final String callId;
   final bool isCaller;
   final String otherUserName;
-  final String currentUserId; // Nuevo parámetro requerido
+  final String currentUserId;
 
   const CallScreen({
     super.key,
@@ -34,78 +34,143 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _initCall() async {
-    await _localRenderer.initialize();
-    await _remoteRenderer.initialize();
+    try {
+      await _localRenderer.initialize();
+      await _remoteRenderer.initialize();
+      await _callService.initialize();
 
-    await _callService.initialize();
+      _localRenderer.srcObject = _callService.localStream;
 
-    // CORRECCIÓN: Usar srcObject en lugar de addRenderer
-    _localRenderer.srcObject = _callService.localStream;
-
-    _callService.onRemoteStreamReceived = (stream) {
-      _remoteRenderer.srcObject = stream; // CORRECCIÓN AQUÍ TAMBIÉN
-      setState(() => _isConnected = true);
-    };
-
-    if (widget.isCaller) {
-      await _callService.createOffer(widget.callId, widget.currentUserId);
-      FirebaseFirestore.instance.collection('calls').doc(widget.callId).snapshots().listen((doc) {
-        if (doc.exists && doc.data()?['status'] == 'connected') {
-          _callService.acceptOffer(widget.callId);
+      _callService.onRemoteStreamReceived = (stream) {
+        if (mounted) {
+          setState(() {
+            _remoteRenderer.srcObject = stream;
+            _isConnected = true;
+          });
         }
-      });
-    } else {
-      await _callService.answerCall(widget.callId, widget.currentUserId);
+      };
+
+      if (widget.isCaller) {
+        await _callService.createOffer(widget.callId, widget.currentUserId);
+        FirebaseFirestore.instance.collection('calls').doc(widget.callId).snapshots().listen((doc) {
+          if (doc.exists && doc.data()?['status'] == 'connected') {
+            _callService.acceptOffer(widget.callId);
+          }
+        });
+      } else {
+        await _callService.answerCall(widget.callId, widget.currentUserId);
+      }
+    } catch (e) {
+      print('❌ Error al inicializar la llamada: $e');
+    }
+  }
+
+  // ✅ FUNCIÓN DE COLGAR INFALIBLE
+  Future<void> _endCall() async {
+    try {
+      // 1. Intentar notificar a Firebase y cerrar WebRTC
+      await _callService.hangUp(widget.callId);
+    } catch (e) {
+      print('⚠️ Error al colgar en el servicio (se cerrará la pantalla de todos modos): $e');
+    } finally {
+      // 2. Cerrar la pantalla SIEMPRE, haya ocurrido un error o no
+      if (mounted) {
+        Navigator.pop(context);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
-          ),
-          Positioned(
-            top: 40, right: 20, width: 100, height: 150,
-            child: Container(
-              decoration: BoxDecoration(border: Border.all(color: Colors.white, width: 2), borderRadius: BorderRadius.circular(12)),
-              child: RTCVideoView(_localRenderer, mirror: true, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
+    return WillPopScope(
+      // ✅ Evita que el usuario salga con el botón "Atrás" del celular sin colgar correctamente
+      onWillPop: () async {
+        await _endCall();
+        return false;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // Video remoto (pantalla completa)
+            Positioned.fill(
+              child: RTCVideoView(
+                  _remoteRenderer,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+              ),
             ),
-          ),
-          Positioned(
-            bottom: 60, left: 0, right: 0,
-            child: Column(
-              children: [
-                Text(widget.otherUserName, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text(_isConnected ? 'Conectado' : 'Llamando...', style: const TextStyle(color: Colors.white70)),
-                const SizedBox(height: 32),
-                CircleAvatar(
-                  radius: 35, backgroundColor: Colors.red,
-                  child: IconButton(
-                    icon: const Icon(Icons.call_end, color: Colors.white, size: 30),
-                    onPressed: () async {
-                      await _callService.hangUp(widget.callId);
-                      Navigator.pop(context);
-                    },
-                  ),
+
+            // Video local (ventana pequeña)
+            Positioned(
+              top: 40,
+              right: 20,
+              width: 100,
+              height: 150,
+              child: Container(
+                decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white, width: 2),
+                    borderRadius: BorderRadius.circular(12)
                 ),
-              ],
+                child: RTCVideoView(
+                    _localRenderer,
+                    mirror: true,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+                ),
+              ),
             ),
-          ),
-        ],
+
+            // Controles inferiores
+            Positioned(
+              bottom: 60,
+              left: 0,
+              right: 0,
+              child: Column(
+                children: [
+                  Text(
+                      widget.otherUserName,
+                      style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, shadows: [
+                        Shadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 2))
+                      ])
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                      _isConnected ? '🟢 Conectado' : '🟡 Llamando...',
+                      style: const TextStyle(color: Colors.white70, fontSize: 16, shadows: [
+                        Shadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 2))
+                      ])
+                  ),
+                  const SizedBox(height: 32),
+
+                  // ✅ BOTÓN DE COLGAR MEJORADO
+                  CircleAvatar(
+                    radius: 35,
+                    backgroundColor: Colors.red.shade600,
+                    child: IconButton(
+                      icon: const Icon(Icons.call_end, color: Colors.white, size: 32),
+                      onPressed: _endCall, // Llama a la función infalible
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   @override
   void dispose() {
-    _localRenderer.dispose();
-    _remoteRenderer.dispose();
-    _callService.dispose();
+    // ✅ Limpieza segura de recursos de WebRTC para evitar fugas de memoria
+    try {
+      _localRenderer.srcObject = null;
+      _remoteRenderer.srcObject = null;
+      _localRenderer.dispose();
+      _remoteRenderer.dispose();
+      _callService.dispose();
+    } catch (e) {
+      print('Error al liberar recursos de llamada: $e');
+    }
     super.dispose();
   }
 }

@@ -19,6 +19,7 @@ class MyWalksScreen extends StatefulWidget {
 class _MyWalksScreenState extends State<MyWalksScreen> {
   Timer? _alarmTimer;
   StreamSubscription<Position>? _positionStream;
+  StreamSubscription<ServiceStatus>? _gpsStatusStream; // ✅ NUEVO: Listener del estado del GPS
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
 
   bool _isSharingLocation = false;
@@ -28,57 +29,122 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
     super.initState();
     _initializeNotifications();
     _startAlarmChecker();
-    _startLocationSharing();
+    _checkAndForceGPS(); // ✅ Iniciamos verificando el GPS
   }
 
   @override
   void dispose() {
     _alarmTimer?.cancel();
     _positionStream?.cancel();
+    _gpsStatusStream?.cancel(); // ✅ Limpiamos el listener
     super.dispose();
   }
 
-  Future<void> _startLocationSharing() async {
+  // ✅ NUEVO: Verifica y OBLIGA a tener el GPS encendido
+  Future<void> _checkAndForceGPS() async {
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return;
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        _showGpsRequiredDialog('Se requieren permisos de ubicación para continuar.');
+        return;
+      }
     }
+
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showGpsRequiredDialog('El GPS está apagado. Es obligatorio activarlo para realizar el paseo.');
+    } else {
+      _startLocationSharing();
+      _listenToGpsChanges(); // ✅ Escuchar si lo apagan después
+    }
+  }
+
+  // ✅ NUEVO: Diálogo que no se puede cerrar hasta activar el GPS
+  void _showGpsRequiredDialog(String message) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false, // No se puede cerrar tocando fuera
+      builder: (context) => WillPopScope(
+        onWillPop: () async => false, // No se puede cerrar con el botón "Atrás"
+        child: AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.location_off, color: Colors.red, size: 28),
+              SizedBox(width: 8),
+              Text('📍 GPS Requerido'),
+            ],
+          ),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await Geolocator.openLocationSettings();
+                // Verificar si lo activó al regresar
+                final enabled = await Geolocator.isLocationServiceEnabled();
+                if (enabled && mounted) {
+                  Navigator.pop(context);
+                  _startLocationSharing();
+                  _listenToGpsChanges();
+                } else if (mounted) {
+                  Navigator.pop(context);
+                  _showGpsRequiredDialog('El GPS sigue apagado. No puedes continuar sin él.');
+                }
+              },
+              child: const Text('Activar GPS', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ NUEVO: Detecta en tiempo real si el usuario apaga el GPS
+  void _listenToGpsChanges() {
+    _gpsStatusStream = Geolocator.getServiceStatusStream().listen((status) {
+      if (status == ServiceStatus.disabled && _isSharingLocation) {
+        setState(() => _isSharingLocation = false);
+        _positionStream?.cancel();
+        _showGpsRequiredDialog('⚠️ Detectamos que apagaste el GPS. Por favor, vuelvelo a activar.');
+      } else if (status == ServiceStatus.enabled && !_isSharingLocation) {
+        _startLocationSharing();
+      }
+    });
+  }
+
+  Future<void> _startLocationSharing() async {
+    if (_isSharingLocation) return; // Evitar múltiples streams
 
     setState(() => _isSharingLocation = true);
 
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-        timeLimit: Duration(seconds: 15),
+        accuracy: LocationAccuracy.bestForNavigation, // ✅ Máxima precisión para mapas en tiempo real
+        distanceFilter: 10, // Actualiza cada 10 metros
       ),
-    ).listen((Position position) {
-      FirebaseFirestore.instance.collection('walks')
+    ).listen((Position position) async {
+      // Actualizamos TODOS los paseos activos de este paseador
+      final snapshot = await FirebaseFirestore.instance
+          .collection('walks')
           .where('walkerId', isEqualTo: widget.walkerId)
           .where('status', whereIn: ['accepted', 'in_progress'])
-          .get()
-          .then((snapshot) {
-        for (var doc in snapshot.docs) {
-          doc.reference.update({
-            'walkerLat': position.latitude,
-            'walkerLng': position.longitude,
-            'lastLocationUpdate': FieldValue.serverTimestamp(),
-          });
-        }
-      });
+          .get();
+
+      for (var doc in snapshot.docs) {
+        await doc.reference.update({
+          'walkerLat': position.latitude,
+          'walkerLng': position.longitude,
+          'lastLocationUpdate': FieldValue.serverTimestamp(),
+        });
+      }
     });
   }
 
-  // ✅ CORREGIDO: Sintaxis limpia y sin líneas duplicadas
   Future<void> _initializeNotifications() async {
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosSettings = DarwinInitializationSettings();
-    const initSettings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
-
+    const initSettings = InitializationSettings(android: androidSettings, iOS: iosSettings);
     await _notificationsPlugin.initialize(initSettings);
   }
 
@@ -88,15 +154,13 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
       final snapshot = await FirebaseFirestore.instance
           .collection('walks')
           .where('walkerId', isEqualTo: widget.walkerId)
+          .where('status', isEqualTo: 'accepted')
           .get();
 
       for (var doc in snapshot.docs) {
         final data = doc.data();
-        if (data['status'] != 'accepted') continue;
-
         final scheduledTime = (data['scheduledTime'] as Timestamp).toDate();
-        final walkDuration = const Duration(minutes: 50);
-        final alarmTime = scheduledTime.add(walkDuration - const Duration(minutes: 5));
+        final alarmTime = scheduledTime.subtract(const Duration(minutes: 5)); // 5 min antes
 
         if (now.isAfter(alarmTime) && data['alarmNotified'] != true) {
           const androidDetails = AndroidNotificationDetails(
@@ -105,22 +169,18 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
             importance: Importance.max,
             priority: Priority.max,
             playSound: true,
-            sound: RawResourceAndroidNotificationSound('alarm_sound'),
           );
           const notificationDetails = NotificationDetails(android: androidDetails);
 
-          // ✅ CORREGIDO: Llamada limpia a show()
           await _notificationsPlugin.show(
             doc.id.hashCode,
             '⏰ ¡Faltan 5 minutos!',
-            'Es hora de entregar al perrito',
+            'Prepárate para iniciar el paseo',
             notificationDetails,
             payload: 'walk_alarm',
           );
 
-          await FirebaseFirestore.instance.collection('walks').doc(doc.id).update({
-            'alarmNotified': true,
-          });
+          await FirebaseFirestore.instance.collection('walks').doc(doc.id).update({'alarmNotified': true});
         }
       }
     });
@@ -133,6 +193,10 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
   }
 
   Future<void> _completeWalk(String walkId) async {
+    // ✅ Detener el rastreo al finalizar
+    _positionStream?.cancel();
+    setState(() => _isSharingLocation = false);
+
     await FirebaseFirestore.instance.collection('walks').doc(walkId).update({
       'status': 'completed',
       'completedAt': FieldValue.serverTimestamp(),
@@ -141,6 +205,7 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
 
   Future<void> _notifyArrival(String walkId) async {
     await FirebaseFirestore.instance.collection('walks').doc(walkId).update({
+      'status': 'in_progress', // ✅ Cambiamos a en progreso al llegar
       'walkerArrived': true,
       'arrivedAt': FieldValue.serverTimestamp(),
     });
@@ -157,6 +222,7 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
     final myWalksStream = FirebaseFirestore.instance
         .collection('walks')
         .where('walkerId', isEqualTo: widget.walkerId)
+        .where('status', whereIn: ['accepted', 'in_progress']) // ✅ Solo mostramos activos
         .snapshots();
 
     return Scaffold(
@@ -170,14 +236,19 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
             child: Row(
               children: [
                 Icon(
-                    Icons.my_location,
-                    color: _isSharingLocation ? Colors.white : Colors.white54,
-                    size: 20
+                  Icons.my_location,
+                  color: _isSharingLocation ? Colors.white : Colors.redAccent,
+                  size: 20,
                 ),
-                if (_isSharingLocation) ...[
-                  const SizedBox(width: 4),
-                  Text('GPS ON', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                ]
+                const SizedBox(width: 4),
+                Text(
+                  _isSharingLocation ? 'GPS ON' : 'GPS OFF',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: _isSharingLocation ? Colors.white : Colors.redAccent,
+                  ),
+                ),
               ],
             ),
           ),
@@ -193,41 +264,30 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
           if (snapshot.hasError) {
             return Center(child: Padding(
               padding: const EdgeInsets.all(24.0),
-              child: Text('Error: ${snapshot.error}', style: TextStyle(color: Colors.red)),
+              child: Text('Error: ${snapshot.error}', style: const TextStyle(color: Colors.red)),
             ));
           }
 
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final acceptedDocs = snapshot.data!.docs.where((doc) {
-            final data = doc.data() as Map<String, dynamic>?;
-            return data?['status'] == 'accepted';
-          }).toList();
-
-          final walks = acceptedDocs
-              .map((doc) => WalkModel.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-              .toList();
-
-          walks.sort((a, b) => a.scheduledTime.compareTo(b.scheduledTime));
-
-          if (walks.isEmpty) {
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.calendar_today_outlined, size: 60, color: Colors.grey[400]),
                   const SizedBox(height: 16),
-                  Text('No tienes paseos activos',
-                      style: GoogleFonts.poppins(fontSize: 16, color: Colors.grey[600])),
+                  Text('No tienes paseos activos', style: GoogleFonts.poppins(fontSize: 16, color: Colors.grey[600])),
                   const SizedBox(height: 8),
-                  Text('Acepta una solicitud para verla aquí',
-                      style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                  Text('Acepta una solicitud para verla aquí', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                 ],
               ),
             );
           }
+
+          final walks = snapshot.data!.docs
+              .map((doc) => WalkModel.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+              .toList();
+
+          walks.sort((a, b) => a.scheduledTime.compareTo(b.scheduledTime));
 
           return ListView.builder(
             padding: const EdgeInsets.all(16),
@@ -282,14 +342,22 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
                               ),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(12)),
-                                child: Text('CONFIRMADO', style: TextStyle(color: Colors.blue.shade800, fontSize: 10, fontWeight: FontWeight.bold)),
+                                decoration: BoxDecoration(
+                                    color: walk.status == 'in_progress' ? Colors.green.shade100 : Colors.blue.shade100,
+                                    borderRadius: BorderRadius.circular(12)
+                                ),
+                                child: Text(
+                                  walk.status == 'in_progress' ? 'EN PROGRESO' : 'CONFIRMADO',
+                                  style: TextStyle(
+                                      color: walk.status == 'in_progress' ? Colors.green.shade800 : Colors.blue.shade800,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold
+                                  ),
+                                ),
                               ),
                             ],
                           ),
-
                           const SizedBox(height: 16),
-
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(12)),
@@ -299,7 +367,6 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
                                 Row(children: [Icon(Icons.calendar_today, size: 16, color: Colors.blue.shade700), const SizedBox(width: 8), Text('${walk.scheduledTime.day}/${walk.scheduledTime.month}/${walk.scheduledTime.year}', style: const TextStyle(fontWeight: FontWeight.w500))]),
                                 const SizedBox(height: 8),
                                 Row(children: [Icon(Icons.access_time, size: 16, color: Colors.blue.shade700), const SizedBox(width: 8), Text('${walk.scheduledTime.hour}:${walk.scheduledTime.minute.toString().padLeft(2, '0')} hrs', style: const TextStyle(fontWeight: FontWeight.w500))]),
-
                                 if (address.isNotEmpty) ...[
                                   const SizedBox(height: 8),
                                   Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -318,21 +385,22 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
                               ],
                             ),
                           ),
-
                           const SizedBox(height: 16),
 
-                          SizedBox(
-                            width: double.infinity,
-                            height: 45,
-                            child: ElevatedButton.icon(
-                              onPressed: () => _notifyArrival(walk.id),
-                              icon: const Icon(Icons.notifications_active, size: 18),
-                              label: Text('Llegué al domicilio', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 12)),
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                          // Botón de Llegada (solo si está 'accepted')
+                          if (walk.status == 'accepted') ...[
+                            SizedBox(
+                              width: double.infinity,
+                              height: 45,
+                              child: ElevatedButton.icon(
+                                onPressed: () => _notifyArrival(walk.id),
+                                icon: const Icon(Icons.notifications_active, size: 18),
+                                label: Text('Llegué al domicilio', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 12)),
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                              ),
                             ),
-                          ),
-
-                          const SizedBox(height: 12),
+                            const SizedBox(height: 12),
+                          ],
 
                           Row(
                             children: [
@@ -342,37 +410,25 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
                                   onPressed: () {
                                     final chatId = _getChatId(walk.ownerId, widget.walkerId);
                                     Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(
-                                        chatId: chatId,
-                                        currentUserId: widget.walkerId,
-                                        otherUserId: walk.ownerId,
-                                        isWalker: true
+                                      chatId: chatId,
+                                      currentUserId: widget.walkerId,
+                                      otherUserId: walk.ownerId,
+                                      isWalker: true,
                                     )));
                                   },
                                   icon: const Icon(Icons.chat_bubble_outline, size: 16),
                                   label: Text('Chat', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 11)),
-                                  style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.orange,
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                                  ),
+                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                                 ),
                               ),
-
                               const SizedBox(width: 8),
-
                               Expanded(
                                 flex: 1,
                                 child: ElevatedButton.icon(
                                   onPressed: () async {
-                                    final ownerDoc = await FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(walk.ownerId)
-                                        .get();
+                                    final ownerDoc = await FirebaseFirestore.instance.collection('users').doc(walk.ownerId).get();
                                     final ownerName = ownerDoc.data()?['name'] ?? 'Dueño';
-
                                     if (!context.mounted) return;
-
                                     Navigator.push(context, MaterialPageRoute(builder: (_) => CallScreen(
                                       callId: walk.id,
                                       isCaller: true,
@@ -382,29 +438,17 @@ class _MyWalksScreenState extends State<MyWalksScreen> {
                                   },
                                   icon: const Icon(Icons.phone, size: 16),
                                   label: Text('Llamar', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 11)),
-                                  style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.blue,
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                                  ),
+                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                                 ),
                               ),
-
                               const SizedBox(width: 8),
-
                               Expanded(
                                 flex: 1,
                                 child: ElevatedButton.icon(
                                   onPressed: () => _completeWalk(walk.id),
                                   icon: const Icon(Icons.done_all, size: 16),
                                   label: Text('Fin', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 11)),
-                                  style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.green,
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                                  ),
+                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 10), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                                 ),
                               ),
                             ],
