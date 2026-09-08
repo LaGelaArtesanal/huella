@@ -1,155 +1,542 @@
-import * as functions from "firebase-functions/v2";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onObjectFinalized } from "firebase-functions/v2/storage";
+import { onSchedule } from "firebase-functions/v2/scheduler";
+import { onCall } from "firebase-functions/v2/https"; // ✅ Agregado para funciones callable
+import { logger } from "firebase-functions/v2";
 import * as admin from "firebase-admin";
-import * as geofire from "geofire-common";
-import { Request, Response } from "express";
+import * as vision from "@google-cloud/vision";
+import * as Stripe from "stripe"; // ✅ Agregado para Stripe
 
 admin.initializeApp();
 const db = admin.firestore();
+const visionClient = new vision.ImageAnnotatorClient();
 
-// ============================================================
-// 1. ASIGNACIÓN AUTOMÁTICA (Segura por defecto - Trigger de Firestore)
-// ============================================================
-export const onWalkCreated = functions.firestore.onDocumentCreated(
-  "walks/{walkId}",
-  async (event: any) => {
-    const snap = event.data;
-    if (!snap) return;
+// ✅ INICIALIZAR STRIPE CON TU CLAVE SECRETA DE PRUEBA
+const stripe = new Stripe("sk_test_51UAHSHHweWHZEXEPN6PvcV9L1Zixnj9ffltq5zzhbadi6mNlrhGhKd691Kx3ZaLqkqH1wWVPDlVyYrrGacw0yeAT00LOBeVhfS", {
+  apiVersion: "2023-10-16", // Buena práctica: fijar la versión de la API
+});
 
-    const walkData = snap.data();
+// ==========================================
+// 1. NOTIFICACIÓN DE CHAT
+// ==========================================
+export const sendChatNotification = onDocumentCreated(
+  "chats/{chatId}/messages/{messageId}",
+  async (event) => {
+    const messageData = event.data?.data();
+    const chatId = event.params.chatId;
 
-    // Solo procesar paseos inmediatos pendientes
-    if (walkData?.status !== "pending" || !walkData?.isImmediate) {
-      return null;
+    logger.info(`🔔 Nuevo mensaje en chat: ${chatId}`);
+
+    const chatDoc = await db.collection("chats").doc(chatId).get();
+    if (!chatDoc.exists) {
+      logger.error("❌ Chat no encontrado");
+      return;
     }
 
+    const chatData = chatDoc.data();
+    const senderId = messageData?.senderId;
+    const participant1Id = chatData?.participant1Id;
+    const participant2Id = chatData?.participant2Id;
+
+    let receiverId: string | null = null;
+    if (senderId === participant1Id) {
+      receiverId = participant2Id;
+    } else if (senderId === participant2Id) {
+      receiverId = participant1Id;
+    }
+
+    if (!receiverId) {
+      logger.error(`❌ No se pudo determinar el receptor. Sender: ${senderId}`);
+      return;
+    }
+
+    const userDoc = await db.collection("users").doc(receiverId).get();
+    if (!userDoc.exists || !userDoc.data()?.fcmToken) {
+      logger.info(`❌ El usuario ${receiverId} no tiene token FCM`);
+      return;
+    }
+
+    const fcmToken = userDoc.data()!.fcmToken;
+
+    const message: admin.messaging.Message = {
+      token: fcmToken,
+      notification: {
+        title: "Nuevo mensaje de Huella 🐾",
+        body: messageData?.text || "Tienes un nuevo mensaje",
+      },
+      data: {
+        type: "chat",
+        chatId: chatId,
+        click_action: "FLUTTER_NOTIFICATION_CLICK",
+      },
+      android: {
+        priority: "high",
+        notification: {
+          channelId: "chat_message_channel",
+          sound: "default",
+        },
+      },
+    };
+
     try {
-      const center: [number, number] = [
-        walkData.ownerLat as number,
-        walkData.ownerLng as number
-      ];
-      const radiusInM = 5000;
-      const bounds = geofire.geohashQueryBounds(center, radiusInM);
-
-      const promises: Promise<admin.firestore.QuerySnapshot>[] = [];
-      for (const b of bounds) {
-        const q = db.collection("users")
-          .where("role", "==", "walker")
-          .orderBy("geohash")
-          .startAt(b[0])
-          .endAt(b[1]);
-        promises.push(q.get());
-      }
-
-      const snapshots = await Promise.all(promises);
-      const matchingDocs: admin.firestore.QueryDocumentSnapshot[] = [];
-
-      for (const s of snapshots) {
-        for (const doc of s.docs) {
-          const lat = doc.get("lat") as number;
-          const lng = doc.get("lng") as number;
-          const distanceInM = geofire.distanceBetween([lat, lng], center);
-
-          if (distanceInM <= radiusInM) {
-            matchingDocs.push(doc);
-          }
-        }
-      }
-
-      // Filtrar paseadores con menos de 2 paseos activos
-      const eligibleWalkers = matchingDocs.filter(
-        (doc) => (doc.data().activeWalks || 0) < 2
-      );
-
-      // Ordenar: primero los que tienen menos paseos, luego por rating
-      eligibleWalkers.sort((a, b) => {
-        const aWalks = a.data().activeWalks || 0;
-        const bWalks = b.data().activeWalks || 0;
-        if (aWalks !== bWalks) return aWalks - bWalks;
-        return (b.data().rating || 0) - (a.data().rating || 0);
-      });
-
-      if (eligibleWalkers.length === 0) {
-        console.log("No hay paseadores elegibles");
-        return null;
-      }
-
-      const bestWalker = eligibleWalkers[0];
-      const walkerId = bestWalker.id;
-
-      const batch = db.batch();
-      batch.update(snap.ref, {
-        walkerId: walkerId,
-        status: "assigned",
-        assignedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      batch.update(bestWalker.ref, {
-        activeWalks: admin.firestore.FieldValue.increment(1),
-      });
-      await batch.commit();
-
-      console.log(`✅ Paseo asignado a ${walkerId}`);
-      return null;
-
+      await admin.messaging().send(message);
+      logger.info(`✅ Notificación de chat enviada a: ${receiverId}`);
     } catch (error) {
-      console.error("❌ Error en asignación:", error);
-      return null;
+      logger.error("❌ Error enviando notificación:", error);
     }
   }
 );
 
-// ============================================================
-// 2. MIGRACIÓN DE GEOHASH (PROTEGIDA - Solo Admins)
-// ============================================================
-export const migrateWalkerLocations = functions.https.onRequest(
-  async (req: Request, res: Response) => {
-    // ✅ VALIDACIÓN DE SEGURIDAD OBLIGATORIA
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No autorizado. Se requiere token.' });
-    }
+// ==========================================
+// 2. NOTIFICACIÓN DE NUEVO PASEO + REGISTRO DE HEATMAP
+// ==========================================
+export const sendWalkRequestNotification = onDocumentCreated(
+  "walks/{walkId}",
+  async (event) => {
+    const walkData = event.data?.data();
 
-    try {
-      const token = authHeader.split('Bearer ')[1];
-      const decodedToken = await admin.auth().verifyIdToken(token);
+    if (walkData?.status === 'pending' || walkData?.status === 'paid') {
 
-      // Verificar que el usuario exista y sea administrador
-      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-      const userData = userDoc.data();
+      const ownerLat = walkData.ownerLat;
+      const ownerLng = walkData.ownerLng;
 
-      if (!userData || (userData.role !== 'admin' && userData.role !== 'temp_admin')) {
-        return res.status(403).json({ error: 'Permiso denegado. Solo admins pueden ejecutar esta migración.' });
+      if (ownerLat !== undefined && ownerLng !== undefined && typeof ownerLat === 'number' && typeof ownerLng === 'number') {
+        await db.collection('walk_requests_heatmap').add({
+          lat: ownerLat,
+          lng: ownerLng,
+          walkId: event.params.walkId,
+          status: walkData.status,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          expiresAt: admin.firestore.Timestamp.fromDate(
+            new Date(Date.now() + 2 * 60 * 60 * 1000)
+          ),
+        });
+        logger.info(`📍 Coordenadas registradas para heatmap: Lat ${ownerLat}, Lng ${ownerLng}`);
+      } else {
+        logger.warn(`⚠️ Coordenadas inválidas o faltantes para el paseo ${event.params.walkId}`);
       }
 
-      // Lógica original de migración
       const walkersSnapshot = await db.collection("users")
         .where("role", "==", "walker")
+        .where("isVerified", "==", true)
         .get();
 
-      let updatedCount = 0;
-      const batch = db.batch();
-
-      for (const doc of walkersSnapshot.docs) {
+      const tokens: string[] = [];
+      walkersSnapshot.forEach((doc) => {
         const data = doc.data();
-        // Solo actualizar si tiene coordenadas pero no geohash
-        if (data.lat && data.lng && !data.geohash) {
-          const hash = geofire.geohashForLocation([
-            data.lat as number,
-            data.lng as number
-          ]);
-          batch.update(doc.ref, { geohash: hash });
-          updatedCount++;
+        if (data.fcmToken) {
+          tokens.push(data.fcmToken);
+        }
+      });
+
+      if (tokens.length > 0) {
+        const messages: admin.messaging.Message[] = tokens.map((token) => ({
+          token: token,
+          notification: {
+            title: "¡Nueva Solicitud de Paseo! 🐾",
+            body: "Tienes un nuevo paseo disponible. ¡Tócalo para aceptar!",
+          },
+          data: {
+            type: "new_walk",
+            walkId: event.params.walkId,
+            click_action: "FLUTTER_NOTIFICATION_CLICK",
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "high_importance_channel",
+              sound: "default",
+            },
+          },
+        }));
+
+        try {
+          const response = await admin.messaging().sendEach(messages);
+          logger.info(`✅ Notificación de paseo enviada: ${response.successCount} exitosas, ${response.failureCount} fallidas`);
+        } catch (error) {
+          logger.error("❌ Error enviando notificación de paseo:", error);
         }
       }
-
-      if (updatedCount > 0) {
-        await batch.commit();
-        res.status(200).send(`✅ Migración completada: ${updatedCount} paseadores actualizados.`);
-      } else {
-        res.status(200).send("ℹ️ No se encontraron paseadores pendientes de migración.");
-      }
-    } catch (error) {
-      console.error("❌ Error en migración:", error);
-      res.status(500).json({ error: 'Error interno del servidor' });
     }
   }
 );
+
+// ==========================================
+// 3. NOTIFICACIÓN DE LLAMADA ENTRANTE
+// ==========================================
+export const sendCallNotification = onDocumentCreated(
+  "calls/{callId}",
+  async (event) => {
+    const callData = event.data?.data();
+    const receiverId = callData?.receiverId;
+
+    logger.info('📞 Nueva llamada:', {
+      callId: event.params.callId,
+      receiverId: receiverId,
+      callerId: callData?.callerId,
+      callerName: callData?.callerName
+    });
+
+    if (!receiverId) {
+      logger.error('❌ No hay receiverId en el documento de la llamada');
+      return;
+    }
+
+    const userDoc = await db.collection("users").doc(receiverId).get();
+    const fcmToken = userDoc.data()?.fcmToken;
+
+    if (!fcmToken) {
+      logger.info("❌ No hay token FCM para el usuario", receiverId);
+      return;
+    }
+
+    const message: admin.messaging.Message = {
+      token: fcmToken,
+      notification: {
+        title: `📞 ${callData.callerName || 'Llamada entrante'}`,
+        body: callData.isVideo ? 'Videollamada entrante' : 'Llamada de audio entrante',
+      },
+      data: {
+        type: "incoming_call",
+        callId: event.params.callId,
+        walkId: callData.walkId || '',
+        callerId: callData.callerId || '',
+        callerName: callData.callerName || '',
+        isVideo: callData.isVideo?.toString() || 'false',
+      },
+      android: {
+        priority: "high",
+        notification: {
+          channelId: "high_importance_channel",
+          sound: "default",
+          clickAction: "FLUTTER_NOTIFICATION_CLICK",
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: "default",
+            contentAvailable: true,
+          },
+        },
+      },
+    };
+
+    try {
+      await admin.messaging().send(message);
+      logger.info("✅ Notificación de llamada enviada a", receiverId);
+    } catch (error) {
+      logger.error(" Error enviando notificación:", error);
+    }
+  }
+);
+
+// ==========================================
+// 4. VERIFICACIÓN AUTOMÁTICA DE DOCUMENTOS (IA)
+// ==========================================
+export const verifyWalkerDocuments = onObjectFinalized(
+  async (event) => {
+    const object = event.data;
+    if (!object) return;
+
+    const filePath = object.name;
+    const contentType = object.contentType;
+
+    const isImage = contentType?.startsWith("image/");
+    const isPDF = contentType === "application/pdf";
+
+    if (!isImage && !isPDF) {
+      logger.info("No es una imagen ni PDF, ignorando...");
+      return;
+    }
+
+    if (!filePath.startsWith("walker_documents/") && !filePath.startsWith("verifications/")) {
+      logger.info("No está en carpeta válida, ignorando...");
+      return;
+    }
+
+    logger.info(`🔍 Procesando: ${filePath}`);
+
+    const pathParts = filePath.split("/");
+    const userId = pathParts[1];
+    const fileName = pathParts[2] ? pathParts[2].split(".")[0] : "unknown";
+
+    if (!userId || fileName === "unknown") {
+      logger.error("❌ No se pudo extraer userId o fileName");
+      return;
+    }
+
+    const docTypeMap: { [key: string]: string } = {
+      "ine_front": "ine_front",
+      "ine_back": "ine_back",
+      "id": "ine_front",
+      "birth_cert": "acta_nacimiento",
+      "fiscal_const": "constancia_fiscal",
+      "address_proof": "comprobante_domicilio",
+      "selfie": "selfie",
+      "acta_nacimiento": "acta_nacimiento",
+      "constancia_fiscal": "constancia_fiscal",
+      "comprobante_domicilio": "comprobante_domicilio",
+    };
+
+    const docType = docTypeMap[fileName] || fileName;
+
+    try {
+      const userDoc = await db.collection("users").doc(userId).get();
+      if (!userDoc.exists) {
+        logger.error("Usuario no encontrado en Firestore");
+        return;
+      }
+
+      const userData = userDoc.data();
+      const userName = (userData?.name || "").toUpperCase();
+      const userLastName = (userData?.lastName || "").toUpperCase();
+      const userCURP = (userData?.curp || "").toUpperCase();
+      const userRFC = (userData?.rfc || "").toUpperCase();
+
+      let validationResult: any = {};
+
+      switch (docType) {
+        case "ine_front":
+        case "ine_back":
+          validationResult = await verifyINE(object, userName, userLastName);
+          break;
+        case "acta_nacimiento":
+          validationResult = await verifyActaNacimiento(object, userCURP, userName);
+          break;
+        case "constancia_fiscal":
+          validationResult = await verifyConstanciaFiscal(object, userRFC, isPDF);
+          break;
+        case "comprobante_domicilio":
+          validationResult = await verifyDomicilio(object);
+          break;
+        case "selfie":
+          validationResult = await verifySelfie(object);
+          break;
+        default:
+          logger.info(`📄 Tipo de documento desconocido: ${docType}`);
+          return;
+      }
+
+      await updateDocumentStatus(userId, docType, validationResult);
+      await checkAllDocumentsApproved(userId);
+    } catch (error) {
+      logger.error("❌ Error en verificación:", error);
+    }
+  }
+);
+
+// ==========================================
+// 5. LIMPIEZA AUTOMÁTICA DEL HEATMAP (Cada 30 minutos)
+// ==========================================
+export const cleanupHeatmapData = onSchedule({ schedule: "every 30 minutes" }, async () => {
+  const now = admin.firestore.Timestamp.now();
+
+  const expiredDocs = await db.collection('walk_requests_heatmap')
+    .where('expiresAt', '<', now)
+    .get();
+
+  if (expiredDocs.empty) {
+    logger.info("🧹 No hay registros antiguos del heatmap para limpiar");
+    return;
+  }
+
+  const batch = db.batch();
+  expiredDocs.forEach((doc) => {
+    batch.delete(doc.ref);
+  });
+
+  await batch.commit();
+  logger.info(`🧹 Limpiados ${expiredDocs.size} registros antiguos del heatmap`);
+});
+
+// ==========================================
+// 6. CREAR INTENTO DE PAGO CON STRIPE (NUEVO)
+// ==========================================
+export const createPaymentIntent = onCall(async (request) => {
+  // 1. Verificar que el usuario esté autenticado
+  if (!request.auth) {
+    throw new Error("No autenticado");
+  }
+
+  const { amount, currency, walkId } = request.data;
+
+  if (!amount || !currency || !walkId) {
+    throw new Error("Faltan parámetros requeridos (amount, currency, walkId)");
+  }
+
+  try {
+    // 2. Crear el PaymentIntent en Stripe
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // Stripe maneja los montos en centavos
+      currency: currency, // "mxn"
+      metadata: {
+        walkId: walkId,
+        ownerId: request.auth.uid,
+      },
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    logger.info(`✅ PaymentIntent creado: ${paymentIntent.id} por $${amount} ${currency}`);
+
+    // 3. Devolver el clientSecret a la app de Flutter
+    return {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+    };
+  } catch (error: any) {
+    logger.error("❌ Error creando PaymentIntent:", error);
+    throw new Error(error.message || "Error al crear el intento de pago");
+  }
+});
+
+// ==========================================
+// FUNCIONES DE VALIDACIÓN INDIVIDUAL
+// ==========================================
+
+async function verifyINE(object: any, userName: string, userLastName: string) {
+  const imageUri = `gs://${object.bucket}/${object.name}`;
+  const request = { image: { source: { imageUri } } };
+  const [result] = await visionClient.textDetection(request);
+  const fullText = result.textAnnotations?.[0]?.description?.toUpperCase() || "";
+
+  const nameMatch = userName && fullText.includes(userName);
+  const hasINEKeyword = fullText.includes("INE") || fullText.includes("INSTITUTO NACIONAL ELECTORAL") || fullText.includes("CREDENCIAL PARA VOTAR");
+
+  const isValid = nameMatch && hasINEKeyword;
+  const reason = isValid ? "INE verificada correctamente" : (!nameMatch ? "El nombre no coincide con el registrado" : "No parece ser una credencial INE válida");
+
+  return { isValid, reason, extractedData: fullText.substring(0, 200) };
+}
+
+async function verifyActaNacimiento(object: any, userCURP: string, userName: string) {
+  if (!userCURP || userCURP.length !== 18) return { isValid: false, reason: "CURP no válida o incompleta" };
+
+  const imageUri = `gs://${object.bucket}/${object.name}`;
+  const request = { image: { source: { imageUri } } };
+  const [result] = await visionClient.textDetection(request);
+  const fullText = result.textAnnotations?.[0]?.description?.toUpperCase() || "";
+
+  const curpMatch = fullText.includes(userCURP);
+  const nameMatch = userName && fullText.includes(userName);
+
+  const isValid = curpMatch && nameMatch;
+  const reason = isValid ? "Acta de nacimiento verificada (CURP válida)" : (!curpMatch ? "La CURP no aparece en el acta" : "El nombre no coincide con el acta");
+
+  return { isValid, reason, extractedData: userCURP };
+}
+
+async function verifyConstanciaFiscal(object: any, userRFC: string, isPDF: boolean = false) {
+  if (!userRFC || userRFC.length < 12) return { isValid: false, reason: "RFC no válido o incompleto" };
+
+  const imageUri = `gs://${object.bucket}/${object.name}`;
+  let fullText = "";
+
+  try {
+    if (isPDF) {
+      const [result] = await visionClient.documentTextDetection({ image: { source: { imageUri } } });
+      fullText = result.fullTextAnnotation?.text?.toUpperCase() || "";
+    } else {
+      const [result] = await visionClient.textDetection({ image: { source: { imageUri } } });
+      fullText = result.textAnnotations?.[0]?.description?.toUpperCase() || "";
+    }
+  } catch (error) {
+    logger.error("Error al procesar PDF/Imagen:", error);
+    return { isValid: false, reason: "Error al procesar el documento" };
+  }
+
+  const rfcMatch = fullText.includes(userRFC);
+  const hasSATKeyword = fullText.includes("SAT") || fullText.includes("SISTEMA DE ADMINISTRACIÓN TRIBUTARIA") || fullText.includes("CONSTANCIA DE SITUACIÓN FISCAL");
+
+  const isValid = rfcMatch && hasSATKeyword;
+  const reason = isValid ? "Constancia fiscal verificada (RFC válido)" : (!rfcMatch ? "El RFC no aparece en la constancia" : "No parece ser una constancia del SAT válida");
+
+  return { isValid, reason, extractedData: userRFC };
+}
+
+async function verifyDomicilio(object: any) {
+  const imageUri = `gs://${object.bucket}/${object.name}`;
+  const request = { image: { source: { imageUri } } };
+  const [result] = await visionClient.textDetection(request);
+  const fullText = result.textAnnotations?.[0]?.description?.toUpperCase() || "";
+
+  const hasSufficientText = fullText.length > 100;
+  const hasAddressKeywords = fullText.includes("CALLE") || fullText.includes("AVENIDA") || fullText.includes("BLVD") || fullText.includes("CP") || fullText.includes("CODIGO POSTAL");
+
+  const isValid = hasSufficientText && hasAddressKeywords;
+  const reason = isValid ? "Comprobante de domicilio válido" : "El documento no parece ser un comprobante de domicilio válido o es muy borroso";
+
+  return { isValid, reason };
+}
+
+async function verifySelfie(object: any) {
+  const imageUri = `gs://${object.bucket}/${object.name}`;
+  const request = { image: { source: { imageUri } } };
+  const [result] = await visionClient.faceDetection(request);
+  const faces = result.faceAnnotations;
+
+  const hasOneFace = faces && faces.length === 1;
+  const face = faces?.[0];
+  const hasGoodQuality = face && (face.detectionConfidence ?? 0) > 0.8;
+
+  const isValid = hasOneFace && hasGoodQuality;
+  const reason = isValid ? "Selfie válido (1 rostro detectado)" : (!hasOneFace ? "Debe haber exactamente 1 persona en la selfie" : "La calidad de la imagen es muy baja o el rostro no es claro");
+
+  return { isValid, reason, extractedData: `Rostros detectados: ${faces?.length || 0}` };
+}
+
+// ==========================================
+// FUNCIONES AUXILIARES
+// ==========================================
+
+async function updateDocumentStatus(userId: string, docType: string, validation: any) {
+  const docRef = db.collection("users").doc(userId);
+  await docRef.update({
+    [`documents.${docType}.status`]: validation.isValid ? "approved" : "rejected",
+    [`documents.${docType}.reason`]: validation.reason,
+    [`documents.${docType}.verifiedAt`]: admin.firestore.FieldValue.serverTimestamp(),
+    [`documents.${docType}.extractedData`]: validation.extractedData || null,
+  });
+  logger.info(`📝 ${docType}: ${validation.isValid ? "✅" : "❌"} ${validation.reason}`);
+}
+
+async function checkAllDocumentsApproved(userId: string) {
+  const userDoc = await db.collection("users").doc(userId).get();
+  const documents = userDoc.data()?.documents || {};
+
+  const requiredDocs = ["ine_front", "acta_nacimiento", "constancia_fiscal", "comprobante_domicilio", "selfie"];
+  const allApproved = requiredDocs.every((docType) => documents[docType]?.status === "approved");
+
+  if (allApproved) {
+    await db.collection("users").doc(userId).update({
+      verificationStatus: "approved",
+      verificationDate: admin.firestore.FieldValue.serverTimestamp(),
+      canAcceptWalks: true,
+    });
+    await sendFullApprovalNotification(userId);
+    logger.info("🎉 ¡Todos los documentos aprobados! Paseador verificado completamente.");
+  }
+}
+
+async function sendFullApprovalNotification(userId: string) {
+  try {
+    const userDoc = await db.collection("users").doc(userId).get();
+    const fcmToken = userDoc.data()?.fcmToken;
+
+    if (fcmToken) {
+      await admin.messaging().send({
+        token: fcmToken,
+        notification: {
+          title: "🎉 ¡Felicidades! Tu cuenta está verificada",
+          body: "Todos tus documentos han sido aprobados. Ya puedes comenzar a aceptar paseos.",
+        },
+        data: { type: "full_verification_approved" },
+      });
+      logger.info("✅ Notificación de aprobación completa enviada");
+    }
+  } catch (error) {
+    logger.error(" Error al enviar notificación:", error);
+  }
+}

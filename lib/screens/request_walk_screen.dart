@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'select_pet_screen.dart'; // Tu pantalla original de mascotas
+import '../config/pricing_config.dart'; // ✅ Importamos la config
+import 'select_pet_screen.dart';
 
 class RequestWalkScreen extends StatefulWidget {
   final String ownerId;
@@ -21,18 +22,17 @@ class RequestWalkScreen extends StatefulWidget {
 }
 
 class _RequestWalkScreenState extends State<RequestWalkScreen> {
-  int? _selectedDuration; // 30 o 50 minutos
-  double _multiplier = 1.0;
+  int? _selectedDuration;
+  double _selectedMultiplier = 1.0;
 
-  // Controladores para tipo de servicio
-  bool _isScheduled = false; // false = Ahora, true = Agendar
+  bool _isScheduled = false;
   DateTime? _selectedDate;
   TimeOfDay? _selectedTime;
 
   void _selectDuration(int minutes, double multiplier) {
     setState(() {
       _selectedDuration = minutes;
-      _multiplier = multiplier;
+      _selectedMultiplier = multiplier;
     });
   }
 
@@ -61,6 +61,10 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Calculamos los precios reales basados en la configuración
+    final price30 = PricingConfig.calculateFinalPrice(durationMultiplier: PricingConfig.multiplier30Min);
+    final price50 = PricingConfig.calculateFinalPrice(durationMultiplier: PricingConfig.multiplier50Min);
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.blue,
@@ -72,11 +76,9 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('¿Cuándo necesitas el paseo?',
-                style: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.bold)),
+            Text('¿Cuándo necesitas el paseo?', style: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
 
-            // Selector Ahora vs Agendar (Junto al calendario)
             Row(
               children: [
                 Expanded(
@@ -106,20 +108,14 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
                 ),
               ],
             ),
-
             const SizedBox(height: 24),
 
-            // Contenido Condicional: Calendario solo si es Agendar
             if (_isScheduled) ...[
               GestureDetector(
                 onTap: _pickDateTime,
                 child: Container(
                   padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.shade200),
-                  ),
+                  decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.blue.shade200)),
                   child: Row(
                     children: [
                       Icon(Icons.calendar_today, color: Colors.blue.shade700, size: 28),
@@ -131,9 +127,7 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
                             Text('Fecha y Hora', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
                             const SizedBox(height: 4),
                             Text(
-                              _selectedDate == null
-                                  ? 'Tocar para seleccionar'
-                                  : '${_selectedDate!.day}/${_selectedDate!.month} - ${_selectedTime?.format(context) ?? '--:--'}',
+                              _selectedDate == null ? 'Tocar para seleccionar' : '${_selectedDate!.day}/${_selectedDate!.month} - ${_selectedTime?.format(context) ?? '--:--'}',
                               style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue.shade900),
                             ),
                           ],
@@ -148,20 +142,13 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
             ] else ...[
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange.shade200),
-                ),
+                decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange.shade200)),
                 child: Row(
                   children: [
                     Icon(Icons.flash_on, color: Colors.deepOrange, size: 28),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: Text(
-                        'Buscaremos un paseador disponible cerca de ti inmediatamente.',
-                        style: TextStyle(color: Colors.deepOrange.shade900, fontSize: 14),
-                      ),
+                      child: Text('Buscaremos un paseador disponible cerca de ti inmediatamente.', style: TextStyle(color: Colors.deepOrange.shade900, fontSize: 14)),
                     ),
                   ],
                 ),
@@ -172,26 +159,26 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
             Text('Duración del Paseo', style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
 
-            // Opción 30 Minutos
+            // ✅ Opción 30 Minutos con PRECIO REAL CALCULADO
             _buildDurationCard(
               minutes: 30,
-              multiplier: 0.70,
+              multiplier: PricingConfig.multiplier30Min,
+              displayPrice: price30, // <-- Mostramos el precio real ($70)
               isSelected: _selectedDuration == 30,
-              onTap: () => _selectDuration(30, 0.70),
+              onTap: () => _selectDuration(30, PricingConfig.multiplier30Min),
               subtitle: 'Ideal para caminatas rápidas',
-              priceLabel: 'x0.70 del precio base',
             ),
 
             const SizedBox(height: 16),
 
-            // Opción 50 Minutos
+            // ✅ Opción 50 Minutos con PRECIO REAL CALCULADO
             _buildDurationCard(
               minutes: 50,
-              multiplier: 1.0,
+              multiplier: PricingConfig.multiplier50Min,
+              displayPrice: price50, // <-- Mostramos el precio real ($100)
               isSelected: _selectedDuration == 50,
-              onTap: () => _selectDuration(50, 1.0),
+              onTap: () => _selectDuration(50, PricingConfig.multiplier50Min),
               subtitle: 'Paseo completo estándar',
-              priceLabel: 'Precio estándar (x1.0)',
             ),
 
             const SizedBox(height: 32),
@@ -201,25 +188,23 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
               height: 55,
               child: ElevatedButton(
                 onPressed: () {
-                  // Validar que tenga duración seleccionada
-                  if (_selectedDuration == null) return;
-
-                  // Si es agendado, validar fecha/hora
+                  if (_selectedDuration == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Por favor selecciona la duración')));
+                    return;
+                  }
                   if (_isScheduled && (_selectedDate == null || _selectedTime == null)) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Por favor selecciona fecha y hora')),
-                    );
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Por favor selecciona fecha y hora')));
                     return;
                   }
 
-                  // Navegar a SelectPetScreen pasando TODOS los datos
                   Navigator.push(context, MaterialPageRoute(builder: (_) => SelectPetScreen(
                     ownerId: widget.ownerId,
                     ownerName: widget.ownerName,
                     ownerLat: widget.ownerLat,
                     ownerLng: widget.ownerLng,
                     durationMinutes: _selectedDuration,
-                    priceMultiplier: _multiplier,
+                    priceMultiplier: _selectedMultiplier,
+                    basePrice: PricingConfig.basePrice, // ✅ Enviamos el precio base
                     isScheduled: _isScheduled,
                     scheduledDate: _selectedDate,
                     scheduledTime: _selectedTime,
@@ -242,10 +227,10 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
   Widget _buildDurationCard({
     required int minutes,
     required double multiplier,
+    required double displayPrice, // ✅ Nuevo parámetro
     required bool isSelected,
     required VoidCallback onTap,
     required String subtitle,
-    required String priceLabel,
   }) {
     return GestureDetector(
       onTap: onTap,
@@ -283,15 +268,17 @@ class _RequestWalkScreenState extends State<RequestWalkScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: isSelected ? Colors.blue.shade100 : Colors.grey.shade100,
+                      color: isSelected ? Colors.green.shade100 : Colors.grey.shade100,
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Text(priceLabel,
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: isSelected ? Colors.blue.shade800 : Colors.grey.shade600
-                        )),
+                    child: Text(
+                      '\$${displayPrice.toStringAsFixed(2)} MXN', // ✅ Mostramos el precio calculado
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: isSelected ? Colors.green.shade800 : Colors.grey.shade700,
+                      ),
+                    ),
                   ),
                 ],
               ),

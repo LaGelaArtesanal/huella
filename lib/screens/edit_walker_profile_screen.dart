@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../models/walker_profile_model.dart';
 import '../services/walker_profile_service.dart';
+import '../config/pricing_config.dart'; // ✅ Importar la config del admin
 
 class EditWalkerProfileScreen extends StatefulWidget {
   final String userId;
@@ -17,10 +18,9 @@ class EditWalkerProfileScreen extends StatefulWidget {
 class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
   final _service = WalkerProfileService();
 
-  // NUEVO: Controlador para el nombre del paseador
   final _nameController = TextEditingController();
   final _bioController = TextEditingController();
-  final _priceController = TextEditingController();
+  // ✅ ELIMINADO: _priceController ya no es necesario
   final _experienceController = TextEditingController();
   final _addressController = TextEditingController();
 
@@ -48,11 +48,9 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
     final profile = await _service.getProfile(widget.userId);
 
     if (profile != null) {
-      // NUEVO: Cargar nombre si existe
       _nameController.text = profile.name ?? '';
-
       _bioController.text = profile.bio;
-      _priceController.text = profile.pricePerWalk.toString();
+      // ✅ ELIMINADO: Ya no cargamos el precio en un controlador
       _experienceController.text = profile.experience;
       _isAvailable = profile.isAvailable;
       _radiusKm = profile.radiusKm;
@@ -84,9 +82,6 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
       );
 
       final response = await http.get(url);
-      print('🔍 STATUS CODE: ${response.statusCode}');
-      print(' RESPONSE BODY: ${response.body}');
-
       final data = jsonDecode(response.body);
 
       if (data['status'] == 'OK' && data['results'].isNotEmpty) {
@@ -150,16 +145,12 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
   }
 
   Future<void> _saveProfile() async {
-    // Validación opcional: El nombre es importante para la confianza
     if (_nameController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Por favor ingresa tu nombre')));
       return;
     }
 
-    if (_priceController.text.isEmpty || double.tryParse(_priceController.text) == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ingresa un precio válido')));
-      return;
-    }
+    // ✅ ELIMINADA: Validación del precio, ya que es fijo y no lo edita el usuario
 
     if (_selectedLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Selecciona tu ubicación en el mapa')));
@@ -168,12 +159,11 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
 
     setState(() => _isSaving = true);
 
-    // NUEVO: Incluir name en el modelo al guardar
     final profile = WalkerProfileModel(
       userId: widget.userId,
       name: _nameController.text.trim(),
       bio: _bioController.text.trim(),
-      pricePerWalk: double.parse(_priceController.text),
+      pricePerWalk: PricingConfig.basePrice, // ✅ Siempre usa el precio base del admin
       experience: _experienceController.text.trim(),
       isAvailable: _isAvailable,
       latitude: _selectedLocation!.latitude,
@@ -214,7 +204,6 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
             Text('Información Pública', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.orange.shade900)),
             const SizedBox(height: 16),
 
-            // NUEVO: Campo de Nombre del Paseador
             TextField(
               controller: _nameController,
               decoration: InputDecoration(
@@ -239,14 +228,40 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
             ),
             const SizedBox(height: 16),
 
-            TextField(
-              controller: _priceController,
-              keyboardType: TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: 'Precio base por paseo (\$)',
-                prefixText: '\$ ',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.orange, width: 2)),
+            // ✅ BLOQUEO: Tarifa Base de Solo Lectura (Reemplaza al TextField anterior)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.admin_panel_settings, color: Colors.orange.shade700, size: 28),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tarifa Base del Servicio',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '\$${PricingConfig.basePrice.toStringAsFixed(2)} MXN',
+                          style: GoogleFonts.poppins(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                        Text(
+                          '(Fijado por la administración)',
+                          style: TextStyle(fontSize: 11, color: Colors.grey[500], fontStyle: FontStyle.italic),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 16),
@@ -355,9 +370,9 @@ class _EditWalkerProfileScreenState extends State<EditWalkerProfileScreen> {
 
   @override
   void dispose() {
-    _nameController.dispose(); // Liberar nuevo controlador
+    _nameController.dispose();
     _bioController.dispose();
-    _priceController.dispose();
+    // ✅ ELIMINADO: _priceController.dispose();
     _experienceController.dispose();
     _addressController.dispose();
     super.dispose();

@@ -65,6 +65,29 @@ class _WalkRequestScreenState extends State<WalkRequestScreen> {
 
       await walkRef.set(walk.toMap());
 
+      // ✅ Alimentar el mapa de calor de demanda (colección walk_requests_heatmap)
+      // Usamos la ubicación del domicilio del dueño registrada en su perfil.
+      try {
+        final ownerDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.ownerId)
+            .get();
+        if (ownerDoc.exists) {
+          final data = ownerDoc.data()!;
+          final lat = (data['homeLat'] ?? data['latitude'] ?? data['lat']);
+          final lng = (data['homeLng'] ?? data['longitude'] ?? data['lng']);
+          if (lat != null && lng != null) {
+            await FirebaseFirestore.instance.collection('walk_requests_heatmap').add({
+              'lat': (lat as num).toDouble(),
+              'lng': (lng as num).toDouble(),
+              'createdAt': FieldValue.serverTimestamp(),
+            });
+          }
+        }
+      } catch (e) {
+        print('⚠️ No se pudo registrar en el heatmap: $e');
+      }
+
       if (!mounted) return;
 
       // CORRECCIÓN: Pasar otherUserId para que ChatScreen busque el nombre

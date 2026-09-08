@@ -5,7 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'chat_screen.dart';
-import 'call_screen.dart';
+import 'call_screen.dart'; // ✅ Import agregado
+import '../widgets/rate_review_dialog.dart';
 
 class WalkTrackingScreen extends StatefulWidget {
   final String walkId;
@@ -26,7 +27,6 @@ class WalkTrackingScreen extends StatefulWidget {
 class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
   GoogleMapController? _mapController;
 
-  // Coordenadas por defecto (CDMX) solo como fallback inicial
   LatLng _walkerPosition = const LatLng(19.4326, -99.1332);
   LatLng _ownerPosition = const LatLng(19.4326, -99.1332);
 
@@ -38,12 +38,16 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
   bool _isMapMode = true;
   double? _distanceToHome;
   bool _isFirstLocationUpdate = true;
-  bool _locationLoaded = false; // ✅ NUEVO: Para saber si ya cargamos la ubicación real
+  bool _locationLoaded = false;
+
+  bool _hasRated = false;
+  String _walkerName = 'el paseador';
 
   @override
   void initState() {
     super.initState();
     _loadOwnerLocation();
+    _loadWalkerName();
     _listenToWalkUpdates();
     _startTimer();
   }
@@ -55,13 +59,24 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
     super.dispose();
   }
 
-  // ✅ MEJORADO: Búsqueda inteligente de la ubicación
+  Future<void> _loadWalkerName() async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('users').doc(widget.walkerId).get();
+      if (doc.exists && doc.data()?['name'] != null) {
+        setState(() {
+          _walkerName = doc['name'];
+        });
+      }
+    } catch (e) {
+      print('Error cargando nombre del paseador: $e');
+    }
+  }
+
   Future<void> _loadOwnerLocation() async {
     try {
       double? lat;
       double? lng;
 
-      // 1. Intentar obtener la ubicación desde el documento del paseo
       final walkDoc = await FirebaseFirestore.instance.collection('walks').doc(widget.walkId).get();
       if (walkDoc.exists) {
         final walkData = walkDoc.data()!;
@@ -69,7 +84,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
         lng = (walkData['pickupLng'] ?? walkData['longitude'] ?? walkData['lng'])?.toDouble();
       }
 
-      // 2. Si no está en el paseo, intentar obtenerla del perfil del dueño
       if (lat == null || lng == null) {
         final userDoc = await FirebaseFirestore.instance.collection('users').doc(widget.ownerId).get();
         if (userDoc.exists) {
@@ -79,9 +93,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
         }
       }
 
-      // 3. Actualizar el estado y centrar el mapa si encontramos coordenadas válidas
       if (lat != null && lng != null) {
-        // ✅ TRUCO INFALIBLE: Creamos variables 'double' seguras usando '!'
         final safeLat = lat!;
         final safeLng = lng!;
 
@@ -91,20 +103,9 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
           _calculateDistance();
         });
 
-        // Centrar el mapa en la ubicación del dueño/pickup
         if (_mapController != null) {
           _mapController!.animateCamera(
             CameraUpdate.newLatLngZoom(LatLng(safeLat, safeLng), 15),
-          );
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('⚠️ No se encontró la dirección del paseo en la base de datos'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 4),
-            ),
           );
         }
       }
@@ -114,7 +115,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
   }
 
   void _calculateDistance() {
-    // Evitar cálculos con la posición por defecto si aún no hemos cargado la real
     if (!_locationLoaded) return;
 
     if (_walkerPosition.latitude != 19.4326 || _walkerPosition.longitude != -99.1332) {
@@ -137,17 +137,33 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
       setState(() {
         _walkStatus = data['status'] ?? 'accepted';
 
+        if (_walkStatus == 'completed' && !_hasRated) {
+          _hasRated = true;
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) {
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => RateReviewDialog(
+                  walkId: widget.walkId,
+                  reviewerId: widget.ownerId,
+                  reviewedId: widget.walkerId,
+                  reviewedName: _walkerName,
+                ),
+              );
+            }
+          });
+        }
+
         if (data['walkerLat'] != null && data['walkerLng'] != null) {
-          final newPos = LatLng(data['walkerLat'], data['walkerLng']);
+          final newPos = LatLng(data['walkerLat'].toDouble(), data['walkerLng'].toDouble());
           _walkerPosition = newPos;
           _calculateDistance();
 
-          // Centrar el mapa solo la primera vez que llega la ubicación del paseador
           if (_isFirstLocationUpdate && _mapController != null) {
             _mapController!.animateCamera(CameraUpdate.newLatLngZoom(newPos, 16));
             _isFirstLocationUpdate = false;
           } else if (_isMapMode && _mapController != null) {
-            // Si ya se centró, solo seguimos la posición suavemente
             _mapController!.animateCamera(CameraUpdate.newLatLng(newPos));
           }
         }
@@ -177,15 +193,61 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
     return '$mins:$secs';
   }
 
-  // ✅ Función para generar el ID del chat ordenado (evita errores de permisos por ID incorrecto)
   String _getChatId(String id1, String id2) {
     List<String> ids = [id1, id2];
     ids.sort();
     return '${ids[0]}_${ids[1]}';
   }
 
+  // ✅ FUNCIÓN PARA INICIAR LA LLAMADA (ADAPTADA PARA EL DUEÑO)
+  Future<void> _initiateCall(String walkerId, String walkerName, String walkId, bool isVideo) async {
+    final callId = FirebaseFirestore.instance.collection('calls').doc().id;
+
+    try {
+      await FirebaseFirestore.instance.collection('calls').doc(callId).set({
+        'callId': callId,
+        'callerId': widget.ownerId,     // ✅ El dueño llama
+        'receiverId': walkerId,         // ✅ El paseador recibe
+        'callerName': 'Dueño',
+        'walkId': walkId,
+        'isVideo': isVideo,
+        'status': 'ringing',
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => CallScreen(
+            callId: callId,
+            walkId: walkId,
+            isCaller: true,
+            otherUserName: walkerName,
+            otherUserId: walkerId,
+            currentUserId: widget.ownerId,
+            isVideoCall: isVideo,
+            isWalker: false, // ✅ El dueño NO es paseador
+          ),
+        ),
+      );
+
+      if (mounted) {
+        await FirebaseFirestore.instance.collection('calls').doc(callId).update({'status': 'ended'});
+      }
+    } catch (e) {
+      print('❌ Error al iniciar llamada: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   Widget _buildTextModeView() {
-    final progress = _elapsedSeconds / 3000; // Asumimos 50 min (3000 seg) como estándar
+    final progress = _elapsedSeconds / 3000;
     final distanceText = _distanceToHome != null
         ? '${(_distanceToHome! / 1000).toStringAsFixed(2)} km'
         : 'Calculando...';
@@ -208,7 +270,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                 Text(_formatTime(_elapsedSeconds),
                     style: GoogleFonts.poppins(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.deepOrange)),
                 const SizedBox(height: 24),
-
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -231,7 +292,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 24),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
@@ -310,7 +370,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
               },
               onMapCreated: (controller) {
                 _mapController = controller;
-                // Si la ubicación ya se cargó antes de que el mapa estuviera listo, centrarlo ahora
                 if (_locationLoaded) {
                   controller.animateCamera(CameraUpdate.newLatLngZoom(_ownerPosition, 15));
                 }
@@ -365,14 +424,12 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
               ),
             ),
 
-          // Fila de 3 botones (Chat, Llamar, Ayuda)
           Positioned(
             bottom: 24,
             left: 16,
             right: 16,
             child: Row(
               children: [
-                // Botón Chat
                 Expanded(
                   flex: 1,
                   child: ElevatedButton.icon(
@@ -395,30 +452,57 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(width: 8),
 
-                // Botón Llamar Cifrado
+                // ✅ BOTÓN DE LLAMAR CON SELECTOR (COPIADO DEL PASEADOR)
                 Expanded(
                   flex: 1,
                   child: ElevatedButton.icon(
                     onPressed: () async {
-                      final walkerDoc = await FirebaseFirestore.instance
-                          .collection('users')
-                          .doc(widget.walkerId)
-                          .get();
+                      // 1. Obtener datos del paseador
+                      final walkerDoc = await FirebaseFirestore.instance.collection('users').doc(widget.walkerId).get();
                       final walkerName = walkerDoc.data()?['name'] ?? 'Paseador';
 
                       if (!mounted) return;
 
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => CallScreen(
-                        callId: widget.walkId,
-                        isCaller: true,
-                        otherUserName: walkerName,
-                        currentUserId: widget.ownerId,
-                      )));
+                      // 2. Mostrar el selector (Modal)
+                      showModalBottomSheet(
+                        context: context,
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                        ),
+                        builder: (context) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Selecciona el tipo de llamada', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16)),
+                              const SizedBox(height: 16),
+                              ListTile(
+                                leading: const Icon(Icons.videocam, color: Colors.blue, size: 30),
+                                title: Text('Videollamada', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                                subtitle: const Text('Con cámara y micrófono'),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  _initiateCall(widget.walkerId, walkerName, widget.walkId, true);
+                                },
+                              ),
+                              const Divider(),
+                              ListTile(
+                                leading: const Icon(Icons.call, color: Colors.green, size: 30),
+                                title: Text('Llamada de Audio', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+                                subtitle: const Text('Solo micrófono'),
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  _initiateCall(widget.walkerId, walkerName, widget.walkId, false);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
                     },
-                    icon: const Icon(Icons.phone, size: 18),
+                    icon: const Icon(Icons.call, size: 18),
                     label: Text('Llamar', style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 12)),
                     style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.blue,
@@ -430,8 +514,6 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                 ),
 
                 const SizedBox(width: 8),
-
-                // Botón Ayuda/Reportar
                 Expanded(
                   flex: 1,
                   child: ElevatedButton.icon(
@@ -452,7 +534,7 @@ class _WalkTrackingScreenState extends State<WalkTrackingScreen> {
                                   });
                                   if (mounted) {
                                     Navigator.pop(context);
-                                    Navigator.pop(context); // Regresar a la pantalla anterior
+                                    Navigator.pop(context);
                                     ScaffoldMessenger.of(context).showSnackBar(
                                         const SnackBar(content: Text('Incidente reportado. Soporte notificado.'), backgroundColor: Colors.red)
                                     );

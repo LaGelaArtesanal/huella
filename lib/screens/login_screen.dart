@@ -7,6 +7,7 @@ import 'role_selection_screen.dart';
 import 'admin_dashboard_screen.dart';
 import 'home_owner_screen.dart';
 import 'walker_dashboard_screen.dart';
+import '../services/notification_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -22,6 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   String? _error;
 
+  // ✅ MODIFICADO: Ahora inicializa las notificaciones push después del login
   Future<void> _login() async {
     setState(() { _isLoading = true; _error = null; });
 
@@ -34,9 +36,19 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = false);
 
     if (user != null) {
+      // ✅ NUEVO: Inicializar notificaciones push después del login exitoso
+      try {
+        final notificationService = NotificationService();
+        await notificationService.initialize(user.uid);
+        print('✅ Notificaciones inicializadas para el usuario: ${user.uid}');
+      } catch (e) {
+        print('⚠️ Error al inicializar notificaciones: $e');
+        // No bloqueamos el login si falla la notificación
+      }
+
       Widget destination;
       if (user.role == 'admin' || user.role == 'temp_admin') {
-        destination = AdminDashboardScreen();
+        destination = AdminDashboardScreen(adminId: user.uid);
       } else if (user.role == 'owner') {
         destination = HomeOwnerScreen(userId: user.uid, userName: user.name);
       } else {

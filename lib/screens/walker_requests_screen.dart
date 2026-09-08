@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/walk_model.dart';
-import '../models/pet_model.dart';
 import 'my_walks_screen.dart';
+import '../services/alert_service.dart'; // ✅ Import del servicio de alertas
 
 class WalkerRequestsScreen extends StatefulWidget {
   final String walkerId;
@@ -14,25 +14,10 @@ class WalkerRequestsScreen extends StatefulWidget {
 }
 
 class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
-
-  // NUEVO: Función para contar paseos activos de un paseador específico
-  Future<int> _getActiveWalksCount(String uid) async {
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('walks')
-          .where('walkerId', isEqualTo: uid)
-          .where('status', whereIn: ['accepted', 'in_progress'])
-          .count()
-          .get();
-      return snapshot.count ?? 0;
-    } catch (e) {
-      return 99; // Si falla, asumimos alta carga para no asignarle
-    }
-  }
+  bool _hasAlerted = false; // ✅ Para evitar que suene infinitamente
 
   Future<void> _acceptWalk(WalkModel walk) async {
     try {
-      // 1. VERIFICACIÓN DE LÍMITE (Máximo 2 paseos activos)
       final activeWalksSnapshot = await FirebaseFirestore.instance
           .collection('walks')
           .where('walkerId', isEqualTo: widget.walkerId)
@@ -51,7 +36,6 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
         return;
       }
 
-      // 2. Asignar este paseo a este paseador y cambiar estado
       await FirebaseFirestore.instance.collection('walks').doc(walk.id).update({
         'walkerId': widget.walkerId,
         'status': 'accepted',
@@ -77,8 +61,6 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // CAMBIO CRÍTICO: Buscamos TODAS las solicitudes pendientes/pendientes de pago
-    // Ya NO filtramos por walkerId porque aún no están asignadas
     final requestsStream = FirebaseFirestore.instance
         .collection('walks')
         .where('status', whereIn: ['pending', 'paid'])
@@ -102,7 +84,15 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
             return Center(child: Text('Error: ${snapshot.error}'));
           }
 
+          // ✅ ACTIVAR ALERTA CUANDO LLEGAN SOLICITUDES
+          if (snapshot.hasData && snapshot.data!.docs.isNotEmpty && !_hasAlerted) {
+            _hasAlerted = true;
+            AlertService.triggerAlert(); // 🔊 Sonido + Vibración
+          }
+
           if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            // Resetear la alerta si no hay paseos, para que suene la próxima vez que llegue uno
+            _hasAlerted = false;
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -119,20 +109,26 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
             );
           }
 
-          // Convertimos a lista para poder ordenar por equidad
-          final allRequests = snapshot.data!.docs
-              .map((doc) => WalkModel.fromMap(doc.data() as Map<String, dynamic>, doc.id))
-              .toList();
-
-          // NOTA: En una app real de producción, este ordenamiento debe hacerse
-          // en el Backend (Cloud Functions) para evitar que todos los paseadores
-          // descarguen todas las solicitudes. Aquí lo hacemos en cliente para demostración.
+          final allRequestsData = snapshot.data!.docs.map((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            return {
+              'walk': WalkModel.fromMap(data, doc.id),
+              'data': data,
+            };
+          }).toList();
 
           return ListView.builder(
             padding: const EdgeInsets.all(16),
-            itemCount: allRequests.length,
+            itemCount: allRequestsData.length,
             itemBuilder: (context, index) {
-              final walk = allRequests[index];
+              final item = allRequestsData[index];
+              final walk = item['walk'] as WalkModel;
+              final data = item['data'] as Map<String, dynamic>;
+
+              final basePrice = (data['basePrice'] as num?)?.toDouble() ?? 100.0;
+              final priceMultiplier = (data['priceMultiplier'] as num?)?.toDouble() ?? 1.0;
+              final sizeMultiplier = (data['sizeMultiplier'] as num?)?.toDouble() ?? 1.0;
+              final finalAmount = (data['finalAmount'] as num?)?.toDouble() ?? (basePrice * priceMultiplier * sizeMultiplier);
 
               return FutureBuilder<List<DocumentSnapshot>>(
                 future: Future.wait([
@@ -157,11 +153,10 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
                     }
                   }
 
-                  // Determinar etiqueta visual según tipo de servicio
-                  final bool isImmediate = walk.isImmediate ?? false;
-                  final String typeLabel = isImmediate ? '⚡ INMEDIATO' : '📅 AGENDADO';
-                  final Color labelColor = isImmediate ? Colors.red.shade100 : Colors.purple.shade100;
-                  final Color textColor = isImmediate ? Colors.red.shade800 : Colors.purple.shade800;
+                  final bool isScheduled = data['isScheduled'] == true;
+                  final String typeLabel = isScheduled ? '📅 AGENDADO' : '⚡ INMEDIATO';
+                  final Color labelColor = isScheduled ? Colors.purple.shade100 : Colors.red.shade100;
+                  final Color textColor = isScheduled ? Colors.purple.shade800 : Colors.red.shade800;
 
                   return Card(
                     elevation: 2,
@@ -213,7 +208,14 @@ class _WalkerRequestsScreenState extends State<WalkerRequestsScreen> {
                                 const SizedBox(height: 8),
                                 Row(children: [Icon(Icons.access_time, size: 16, color: Colors.blue.shade700), const SizedBox(width: 8), Text('${walk.scheduledTime.hour}:${walk.scheduledTime.minute.toString().padLeft(2, '0')} hrs', style: const TextStyle(fontWeight: FontWeight.w500))]),
                                 const SizedBox(height: 8),
-                                Row(children: [Icon(Icons.attach_money, size: 16, color: Colors.green.shade700), const SizedBox(width: 8), Text('Total a recibir: \$${walk.amount.toStringAsFixed(0)} MXN', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 16))]),
+                                Row(children: [
+                                  Icon(Icons.attach_money, size: 16, color: Colors.green.shade700),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                      'Total a recibir: \$${finalAmount.toStringAsFixed(2)} MXN',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 16)
+                                  )
+                                ]),
                               ],
                             ),
                           ),

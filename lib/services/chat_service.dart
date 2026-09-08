@@ -49,12 +49,14 @@ class ChatService {
     }
   }
 
+  // ✅ FUNCIÓN OPTIMIZADA CON PAGINACIÓN
   Stream<List<MessageModel>> getMessages(String chatId) {
     return _firestore
         .collection('chats')
         .doc(chatId)
         .collection('messages')
         .orderBy('timestamp', descending: true)
+        .limit(50) // 🚀 AQUÍ ESTÁ LA OPTIMIZACIÓN: Solo descarga los últimos 50 mensajes
         .snapshots()
         .map((snapshot) {
       return snapshot.docs.map((doc) {

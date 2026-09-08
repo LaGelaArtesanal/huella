@@ -81,7 +81,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (user != null) {
         Widget destination;
         if (user.role == 'admin' || user.role == 'temp_admin') {
-          destination = AdminDashboardScreen();
+          destination = AdminDashboardScreen(adminId: user.uid);
         } else if (user.role == 'owner') {
           destination = HomeOwnerScreen(userId: user.uid, userName: user.name);
         } else {

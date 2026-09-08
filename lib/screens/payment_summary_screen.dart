@@ -2,15 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/pet_model.dart';
+import '../config/pricing_config.dart';
 
 class PaymentSummaryScreen extends StatefulWidget {
   final PetModel pet;
+  final String petSize; // ✅ NUEVO
   final String ownerId;
   final String ownerName;
   final double ownerLat;
   final double ownerLng;
   final int durationMinutes;
   final double priceMultiplier;
+  final double basePrice;
   final bool isScheduled;
   final DateTime? scheduledDate;
   final TimeOfDay? scheduledTime;
@@ -18,12 +21,14 @@ class PaymentSummaryScreen extends StatefulWidget {
   const PaymentSummaryScreen({
     super.key,
     required this.pet,
+    required this.petSize, // ✅ NUEVO
     required this.ownerId,
     required this.ownerName,
     required this.ownerLat,
     required this.ownerLng,
     required this.durationMinutes,
     required this.priceMultiplier,
+    required this.basePrice,
     required this.isScheduled,
     this.scheduledDate,
     this.scheduledTime,
@@ -36,67 +41,69 @@ class PaymentSummaryScreen extends StatefulWidget {
 class _PaymentSummaryScreenState extends State<PaymentSummaryScreen> {
   bool _isProcessing = false;
 
-  // CAMBIO CLAVE: Tarifa base fija del paseador
-  static const double BASE_WALKER_PRICE = 100.0;
+  double get _sizeMultiplier => PricingConfig.getSizeMultiplier(widget.petSize);
 
-  // Cálculo correcto: Base * Multiplicador
-  double get _finalPrice => BASE_WALKER_PRICE * widget.priceMultiplier;
+  double get _finalAmount {
+    return PricingConfig.calculateFinalPrice(
+      durationMultiplier: widget.priceMultiplier,
+      size: widget.petSize,
+    );
+  }
 
-  Future<void> _processPaymentAndCreateWalk() async {
+  String _getSizeLabel(String? size) {
+    final s = size?.toLowerCase().trim() ?? '';
+    if (s == 'pequeño' || s == 'small' || s == 'chico') return 'Pequeño';
+    if (s == 'mediano' || s == 'medium' || s == 'medio') return 'Mediano';
+    return 'Grande';
+  }
+
+  Future<void> _confirmAndCreateWalk() async {
     setState(() => _isProcessing = true);
-
     try {
-      await Future.delayed(const Duration(seconds: 2));
+      DateTime finalScheduledTime = widget.isScheduled && widget.scheduledDate != null && widget.scheduledTime != null
+          ? DateTime(widget.scheduledDate!.year, widget.scheduledDate!.month, widget.scheduledDate!.day, widget.scheduledTime!.hour, widget.scheduledTime!.minute)
+          : DateTime.now();
 
-      final walkData = {
+      await FirebaseFirestore.instance.collection('walks').add({
         'ownerId': widget.ownerId,
         'ownerName': widget.ownerName,
-        'petId': widget.pet.id,
-        'petName': widget.pet.name,
-        'status': 'paid',
-        'durationMinutes': widget.durationMinutes,
-        'priceMultiplier': widget.priceMultiplier,
-        'amount': _finalPrice,
-        'isImmediate': !widget.isScheduled,
-        'createdAt': FieldValue.serverTimestamp(),
         'ownerLat': widget.ownerLat,
         'ownerLng': widget.ownerLng,
-      };
+        'petId': widget.pet.id,
+        'petName': widget.pet.name,
+        'petSize': widget.petSize, // ✅ Guardamos el tamaño
+        'durationMinutes': widget.durationMinutes,
+        'basePrice': widget.basePrice,
+        'priceMultiplier': widget.priceMultiplier,
+        'sizeMultiplier': _sizeMultiplier, // ✅ Guardamos el multiplicador de tamaño
+        'finalAmount': _finalAmount,       // ✅ Guardamos el monto final calculado
+        'isScheduled': widget.isScheduled,
+        'scheduledTime': Timestamp.fromDate(finalScheduledTime),
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
 
-      if (!widget.isScheduled && widget.scheduledDate != null && widget.scheduledTime != null) {
-        final scheduledDateTime = DateTime(
-          widget.scheduledDate!.year,
-          widget.scheduledDate!.month,
-          widget.scheduledDate!.day,
-          widget.scheduledTime!.hour,
-          widget.scheduledTime!.minute,
-        );
-        walkData['scheduledTime'] = Timestamp.fromDate(scheduledDateTime);
-      } else {
-        walkData['scheduledTime'] = Timestamp.now();
+      // ✅ Alimentar el mapa de calor de demanda (colección walk_requests_heatmap)
+      // Sin este registro, el heatmap del paseador no tenía datos que mostrar.
+      try {
+        await FirebaseFirestore.instance.collection('walk_requests_heatmap').add({
+          'lat': widget.ownerLat,
+          'lng': widget.ownerLng,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        print('⚠️ No se pudo registrar en el heatmap: $e');
       }
 
-      await FirebaseFirestore.instance.collection('walks').add(walkData);
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(widget.isScheduled ? '✅ ¡Paseo agendado y pagado!' : '✅ ¡Pago exitoso! Buscando paseador...'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-
-      Navigator.pop(context);
-      Navigator.pop(context);
-      Navigator.pop(context);
-
+      if (mounted) {
+        Navigator.popUntil(context, (route) => route.isFirst);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ ¡Paseo solicitado con éxito! Buscando paseador...'), backgroundColor: Colors.green));
+      }
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al procesar: $e'), backgroundColor: Colors.red),
-      );
+      print('Error al crear paseo: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
@@ -105,152 +112,93 @@ class _PaymentSummaryScreenState extends State<PaymentSummaryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // ✅ resizeToAvoidBottomInset: false evita que el teclado o la barra de navegación empujen el contenido y causen overflow
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         backgroundColor: Colors.deepOrange,
-        title: Text('Resumen y Pago', style: GoogleFonts.poppins(color: Colors.white)),
+        title: Text('Resumen del Pago', style: GoogleFonts.poppins(color: Colors.white)),
         leading: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)),
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.blue.shade200),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(widget.isScheduled ? Icons.calendar_today : Icons.flash_on, color: Colors.blue.shade700),
-                            const SizedBox(width: 8),
-                            Text(
-                              widget.isScheduled ? 'Paseo Agendado' : 'Paseo Inmediato',
-                              style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.blue.shade900),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text('Duración: ${widget.durationMinutes} minutos', style: TextStyle(color: Colors.grey[700])),
-                        if (widget.isScheduled && widget.scheduledDate != null) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            'Fecha: ${widget.scheduledDate!.day}/${widget.scheduledDate!.month} - ${widget.scheduledTime?.format(context)}',
-                            style: TextStyle(color: Colors.grey[700], fontWeight: FontWeight.w500),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 24),
-                  Text('Mascota Seleccionada', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 16),
-
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.shade50,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.orange.shade200),
-                    ),
-                    child: Row(
-                      children: [
-                        CircleAvatar(backgroundColor: Colors.deepOrange, child: Icon(Icons.pets, color: Colors.white)),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(widget.pet.name, style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16)),
-                              Text('${widget.pet.breed}', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 32),
-
-                  Text('Desglose de Precio', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 16),
-
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
-                    child: Column(
-                      children: [
-                        // TARIFA BASE CORREGIDA
-                        Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('Tarifa base del paseador'),
-                              Text('\$${BASE_WALKER_PRICE.toStringAsFixed(2)}')
-                            ]
-                        ),
-
-                        const SizedBox(height: 8),
-
-                        // MULTIPLICADOR VISUALMENTE LIMPIO
-                        Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('Ajuste por duración (${widget.durationMinutes} min)'),
-                              Text(
-                                  'x${widget.priceMultiplier} (${((widget.priceMultiplier * 100).round())}%)',
-                                  style: TextStyle(color: Colors.grey[600])
-                              )
-                            ]
-                        ),
-
-                        const Divider(height: 24),
-
-                        // TOTAL CORRECTO
-                        Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('TOTAL A PAGAR', style: TextStyle(fontWeight: FontWeight.bold)),
-                              Text(
-                                  '\$${_finalPrice.toStringAsFixed(2)} MXN',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 20)
-                              )
-                            ]
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))]),
-            child: SafeArea(
-              child: SizedBox(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          // ✅ CORRECCIÓN 1: Reducimos el padding inferior de 24 a 16 para ganar esos 8 píxeles
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Detalles del Servicio', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Container(
                 width: double.infinity,
-                height: 55,
-                child: ElevatedButton.icon(
-                  onPressed: !_isProcessing ? _processPaymentAndCreateWalk : null,
-                  icon: _isProcessing
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                      : const Icon(Icons.lock_outline),
-                  label: Text(_isProcessing ? 'Procesando...' : 'Confirmar y Pagar', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(12)),
+                child: Row(
+                  children: [
+                    CircleAvatar(backgroundColor: Colors.deepOrange, child: const Icon(Icons.pets, color: Colors.white)),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(widget.pet.name, style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text('${widget.pet.breed} • ${_getSizeLabel(widget.petSize)} • ${widget.durationMinutes} min', style: TextStyle(color: Colors.grey[600])),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
+              const SizedBox(height: 24),
+              Text('Desglose de Tarifas', style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(border: Border.all(color: Colors.blue.shade200), borderRadius: BorderRadius.circular(12), color: Colors.blue.shade50),
+                child: Column(
+                  children: [
+                    _buildPriceRow('Precio Base del Servicio', '\$${widget.basePrice.toStringAsFixed(2)}', isInfo: true),
+                    const Divider(height: 24),
+                    _buildPriceRow('Ajuste por duración (${widget.durationMinutes} min)', '${widget.priceMultiplier.toStringAsFixed(2)}x', isMultiplier: true),
+                    const Divider(height: 24),
+                    _buildPriceRow('Ajuste por tamaño (${_getSizeLabel(widget.petSize)})', '${_sizeMultiplier.toStringAsFixed(2)}x', isMultiplier: true),
+                    const Divider(height: 24),
+                    _buildPriceRow('TOTAL A PAGAR', '\$${_finalAmount.toStringAsFixed(2)}', isBold: true, isTotal: true),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text('Nota: El precio base es fijado por la administración.', style: TextStyle(fontSize: 11, color: Colors.grey[600], fontStyle: FontStyle.italic), textAlign: TextAlign.center),
+
+              // ✅ CORRECCIÓN 2: Reducimos el espacio antes del botón de 32 a 24
+              const SizedBox(height: 24),
+
+              SizedBox(
+                width: double.infinity,
+                height: 55,
+                child: ElevatedButton(
+                  onPressed: _isProcessing ? null : _confirmAndCreateWalk,
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  child: _isProcessing
+                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : Text('Confirmar y Solicitar Paseo', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPriceRow(String label, String amount, {bool isBold = false, bool isTotal = false, bool isInfo = false, bool isMultiplier = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: isTotal ? 18 : 14, fontWeight: isBold ? FontWeight.bold : FontWeight.normal, color: isInfo ? Colors.blue.shade800 : Colors.black87)),
+          Text(amount, style: TextStyle(fontSize: isTotal ? 20 : 14, fontWeight: isBold ? FontWeight.bold : (isMultiplier ? FontWeight.w600 : FontWeight.normal), color: isTotal ? Colors.green.shade700 : (isMultiplier ? Colors.orange.shade800 : Colors.black87))),
         ],
       ),
     );

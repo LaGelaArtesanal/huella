@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/pet_model.dart';
-// Importa tu pantalla de resumen de pago (ajusta el nombre si es diferente)
+import '../config/pricing_config.dart';
 import 'payment_summary_screen.dart';
 
 class SelectPetScreen extends StatefulWidget {
@@ -10,10 +10,9 @@ class SelectPetScreen extends StatefulWidget {
   final String ownerName;
   final double ownerLat;
   final double ownerLng;
-
-  // Parámetros opcionales provenientes de RequestWalkScreen
   final int? durationMinutes;
   final double? priceMultiplier;
+  final double? basePrice;
   final bool? isScheduled;
   final DateTime? scheduledDate;
   final TimeOfDay? scheduledTime;
@@ -26,6 +25,7 @@ class SelectPetScreen extends StatefulWidget {
     required this.ownerLng,
     this.durationMinutes,
     this.priceMultiplier,
+    this.basePrice,
     this.isScheduled,
     this.scheduledDate,
     this.scheduledTime,
@@ -86,7 +86,6 @@ class _SelectPetScreenState extends State<SelectPetScreen> {
                 children: [
                   Text('¿Quién irá de paseo?', style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 16),
-
                   if (_pets.isEmpty)
                     Center(
                       child: Padding(
@@ -108,6 +107,7 @@ class _SelectPetScreenState extends State<SelectPetScreen> {
                       itemBuilder: (context, index) {
                         final pet = _pets[index];
                         final isSelected = _selectedPet?.id == pet.id;
+                        final sizeLabel = pet.size == 'large' ? 'Grande' : (pet.size == 'medium' ? 'Mediano' : 'Pequeño');
 
                         return GestureDetector(
                           onTap: () => setState(() => _selectedPet = pet),
@@ -117,24 +117,18 @@ class _SelectPetScreenState extends State<SelectPetScreen> {
                             decoration: BoxDecoration(
                               color: isSelected ? Colors.orange.shade50 : Colors.white,
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: isSelected ? Colors.deepOrange : Colors.grey.shade300,
-                                width: isSelected ? 2 : 1,
-                              ),
+                              border: Border.all(color: isSelected ? Colors.deepOrange : Colors.grey.shade300, width: isSelected ? 2 : 1),
                             ),
                             child: Row(
                               children: [
-                                CircleAvatar(
-                                  backgroundColor: isSelected ? Colors.deepOrange : Colors.grey.shade200,
-                                  child: Icon(Icons.pets, color: isSelected ? Colors.white : Colors.grey.shade600),
-                                ),
+                                CircleAvatar(backgroundColor: isSelected ? Colors.deepOrange : Colors.grey.shade200, child: Icon(Icons.pets, color: isSelected ? Colors.white : Colors.grey.shade600)),
                                 const SizedBox(width: 16),
                                 Expanded(
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       Text(pet.name, style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16)),
-                                      Text('${pet.breed}', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                                      Text('${pet.breed} • $sizeLabel', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
                                     ],
                                   ),
                                 ),
@@ -149,14 +143,9 @@ class _SelectPetScreenState extends State<SelectPetScreen> {
               ),
             ),
           ),
-
-          // Botón inferior fijo para continuar al pago
           Container(
             padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))],
-            ),
+            decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, -5))]),
             child: SafeArea(
               child: SizedBox(
                 width: double.infinity,
@@ -165,23 +154,21 @@ class _SelectPetScreenState extends State<SelectPetScreen> {
                   onPressed: _selectedPet != null ? () {
                     Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentSummaryScreen(
                       pet: _selectedPet!,
+                      petSize: _selectedPet!.size, // ✅ PASAMOS EL TAMAÑO
                       ownerId: widget.ownerId,
                       ownerName: widget.ownerName,
                       ownerLat: widget.ownerLat,
                       ownerLng: widget.ownerLng,
                       durationMinutes: widget.durationMinutes ?? 50,
                       priceMultiplier: widget.priceMultiplier ?? 1.0,
+                      basePrice: widget.basePrice ?? PricingConfig.basePrice,
                       isScheduled: widget.isScheduled ?? false,
                       scheduledDate: widget.scheduledDate,
                       scheduledTime: widget.scheduledTime,
                     )));
                   } : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepOrange,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: Text('Continuar al Pago', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  child: Text('Ver Resumen y Pagar', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
             ),

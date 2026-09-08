@@ -1,5 +1,8 @@
 package com.fredy.huella
 
-import io.flutter.embedding.android.FlutterActivity
+// ✅ Stripe REQUIERE FlutterFragmentActivity (no FlutterActivity).
+// Con FlutterActivity, Stripe.applySettings() lanzaba excepción en main()
+// y la app se quedaba congelada en el splash en release.
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+class MainActivity : FlutterFragmentActivity()
