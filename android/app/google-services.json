@@ -12,7 +12,28 @@
           "package_name": "com.fredy.huella"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "886773009345-r441tcl6evadni2p19ppt18uta57knep.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.fredy.huella",
+            "certificate_hash": "9408618a5eae2f1be7d13343f4d093d3a97cc6ec"
+          }
+        },
+        {
+          "client_id": "886773009345-tk7e8vi124ppjujij72rie8dj4fh29nc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.fredy.huella",
+            "certificate_hash": "0a08f208b4f5b93f2ccad1ca3542792015d03065"
+          }
+        },
+        {
+          "client_id": "886773009345-hc6q4hs77if9n3f4f7mbkj29qjq9mu0e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAgib4vNPI5NcEmHBC76G9tgaZdZHap62o"
@@ -20,7 +41,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "886773009345-hc6q4hs77if9n3f4f7mbkj29qjq9mu0e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

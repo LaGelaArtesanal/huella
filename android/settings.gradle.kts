@@ -19,11 +19,11 @@ pluginManagement {
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
 
-    // ✅ CAMBIO 1: AGP 8.3.2 (La versión más estable y compatible con Flutter)
-    id("com.android.application") version "8.9.1" apply false
+    // ✅ AGP 8.11.1 (mínimo requerido por Flutter 3.47; 8.9.1 ya no es soportado)
+    id("com.android.application") version "8.11.1" apply false
 
-    // ✅ CAMBIO 2: Kotlin 1.9.24 (Esta versión específica ARREGLA el bug de Java 25.0.2)
-    id("org.jetbrains.kotlin.android") version "2.2.0" apply false
+    // ✅ Kotlin 2.2.20 (mínimo requerido por Flutter 3.47)
+    id("org.jetbrains.kotlin.android") version "2.2.20" apply false
 
     // ✅ CAMBIO 3: Google Services estable (necesario para Firebase)
     id("com.google.gms.google-services") version "4.4.2" apply false

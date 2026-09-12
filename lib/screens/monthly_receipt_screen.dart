@@ -56,7 +56,7 @@ class MonthlyReceiptScreen extends StatelessWidget {
           return [
             pw.Header(text: 'Reporte Mensual - Huella', level: 0),
             pw.Text('Paseador ID: $walkerId', style: pw.TextStyle(fontSize: 10)),
-            pw.Text('Período: ${_capitalize(monthName)} $year', style: const pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+            pw.Text('Período: ${_capitalize(monthName)} $year', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
             pw.Text('Fecha de emisión: ${DateFormat('dd/MM/yyyy').format(DateTime.now())}', style: pw.TextStyle(fontSize: 10)),
             pw.Divider(),
             pw.SizedBox(height: 10),

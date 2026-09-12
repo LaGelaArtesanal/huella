@@ -1,20 +1,33 @@
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { onCall } from "firebase-functions/v2/https"; // ✅ Agregado para funciones callable
+import { onCall } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions/v2";
 import * as admin from "firebase-admin";
 import * as vision from "@google-cloud/vision";
-import * as Stripe from "stripe"; // ✅ Agregado para Stripe
+import Stripe from "stripe"; // ✅ Importación por defecto correcta
 
 admin.initializeApp();
 const db = admin.firestore();
 const visionClient = new vision.ImageAnnotatorClient();
 
-// ✅ INICIALIZAR STRIPE CON TU CLAVE SECRETA DE PRUEBA
-const stripe = new Stripe("sk_test_51UAHSHHweWHZEXEPN6PvcV9L1Zixnj9ffltq5zzhbadi6mNlrhGhKd691Kx3ZaLqkqH1wWVPDlVyYrrGacw0yeAT00LOBeVhfS", {
-  apiVersion: "2023-10-16", // Buena práctica: fijar la versión de la API
-});
+// ✅ INICIALIZAR STRIPE
+// La clave secreta debe provenir de un secret de Firebase (NUNCA hardcodeada en el repo):
+//   firebase functions:secrets:set STRIPE_SECRET_KEY
+// Se deja como fallback la clave de prueba anterior para desarrollo local.
+const stripeSecretKey =
+  process.env.STRIPE_SECRET_KEY ??
+  "sk_test_51UAHSHHweWHZEXEPN6PvcV9L1Zixnj9ffltq5zzhbadi6mNlrhGhKd691Kx3ZaLqkqH1wWVPDlVyYrrGacw0yeAT00LOBeVhfS";
+
+// ✅ CORREGIDO: Se eliminó apiVersion para evitar conflictos de tipos con la versión nueva del paquete
+const stripe = new Stripe(stripeSecretKey);
+
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn(
+    "⚠️ STRIPE_SECRET_KEY no está configurada: usando la clave de prueba embebida. " +
+      "Configúrala con: firebase functions:secrets:set STRIPE_SECRET_KEY"
+  );
+}
 
 // ==========================================
 // 1. NOTIFICACIÓN DE CHAT
@@ -226,7 +239,7 @@ export const sendCallNotification = onDocumentCreated(
       await admin.messaging().send(message);
       logger.info("✅ Notificación de llamada enviada a", receiverId);
     } catch (error) {
-      logger.error(" Error enviando notificación:", error);
+      logger.error("❌ Error enviando notificación:", error);
     }
   }
 );
@@ -353,44 +366,47 @@ export const cleanupHeatmapData = onSchedule({ schedule: "every 30 minutes" }, a
 // ==========================================
 // 6. CREAR INTENTO DE PAGO CON STRIPE (NUEVO)
 // ==========================================
-export const createPaymentIntent = onCall(async (request) => {
-  // 1. Verificar que el usuario esté autenticado
-  if (!request.auth) {
-    throw new Error("No autenticado");
+export const createPaymentIntent = onCall(
+  { enforceAppCheck: false }, // ✅ AGREGADO: Desactiva App Check para esta función en desarrollo
+  async (request) => {
+    // 1. Verificar que el usuario esté autenticado
+    if (!request.auth) {
+      throw new Error("No autenticado");
+    }
+
+    const { amount, currency, walkId } = request.data;
+
+    if (!amount || !currency || !walkId) {
+      throw new Error("Faltan parámetros requeridos (amount, currency, walkId)");
+    }
+
+    try {
+      // 2. Crear el PaymentIntent en Stripe
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(amount * 100), // Stripe maneja los montos en centavos
+        currency: currency, // "mxn"
+        metadata: {
+          walkId: walkId,
+          ownerId: request.auth.uid,
+        },
+        automatic_payment_methods: {
+          enabled: true,
+        },
+      });
+
+      logger.info(`✅ PaymentIntent creado: ${paymentIntent.id} por $${amount} ${currency}`);
+
+      // 3. Devolver el clientSecret a la app de Flutter
+      return {
+        clientSecret: paymentIntent.client_secret,
+        paymentIntentId: paymentIntent.id,
+      };
+    } catch (error: any) {
+      logger.error("❌ Error creando PaymentIntent:", error);
+      throw new Error(error.message || "Error al crear el intento de pago");
+    }
   }
-
-  const { amount, currency, walkId } = request.data;
-
-  if (!amount || !currency || !walkId) {
-    throw new Error("Faltan parámetros requeridos (amount, currency, walkId)");
-  }
-
-  try {
-    // 2. Crear el PaymentIntent en Stripe
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Stripe maneja los montos en centavos
-      currency: currency, // "mxn"
-      metadata: {
-        walkId: walkId,
-        ownerId: request.auth.uid,
-      },
-      automatic_payment_methods: {
-        enabled: true,
-      },
-    });
-
-    logger.info(`✅ PaymentIntent creado: ${paymentIntent.id} por $${amount} ${currency}`);
-
-    // 3. Devolver el clientSecret a la app de Flutter
-    return {
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
-    };
-  } catch (error: any) {
-    logger.error("❌ Error creando PaymentIntent:", error);
-    throw new Error(error.message || "Error al crear el intento de pago");
-  }
-});
+);
 
 // ==========================================
 // FUNCIONES DE VALIDACIÓN INDIVIDUAL
@@ -537,6 +553,6 @@ async function sendFullApprovalNotification(userId: string) {
       logger.info("✅ Notificación de aprobación completa enviada");
     }
   } catch (error) {
-    logger.error(" Error al enviar notificación:", error);
+    logger.error("❌ Error al enviar notificación:", error);
   }
 }

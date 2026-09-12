@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart'; // ✅ AGREGADO PARA APP CHECK
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -12,7 +13,7 @@ import 'package:vibration/vibration.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 
-// ✅ 1. IMPORTAR LAS OPCIONES DE FIREBASE (Generado manualmente o con flutterfire)
+// ✅ 1. IMPORTAR LAS OPCIONES DE FIREBASE
 import 'firebase_options.dart';
 
 // Servicios
@@ -37,7 +38,6 @@ final AudioPlayer _globalRingtonePlayer = AudioPlayer();
 // ==========================================
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // ✅ Inicializar Firebase también en segundo plano con las opciones correctas
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
   if (message.data['type'] == 'incoming_call') {
@@ -332,21 +332,16 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // ✅ CONFIGURACIÓN DE STRIPE (MODO PRUEBAS)
-  // Envuelto en try/catch: si Stripe falla al inicializar, la app NO debe
-  // quedarse congelada en el splash (eso pasaba en release).
   try {
     Stripe.publishableKey = 'pk_test_51UAHSHHweWHZEXEPBg0ffbep5vbCEwIk903hlahhUBAwRFPzr2qvAJ8KThLEnd8HNuqK8LNQpOS9CqI4OQJS3so70076e0wHpr';
     Stripe.merchantIdentifier = 'merchant.com.huella.app';
-    Stripe.urlScheme = 'huella'; // Necesario para redirecciones en iOS
+    Stripe.urlScheme = 'huella';
     await Stripe.instance.applySettings();
   } catch (e) {
     print('⚠️ [MAIN] Error al inicializar Stripe (la app continúa): $e');
   }
 
   // ✅ 2. INICIALIZAR FIREBASE CON LAS OPCIONES DE LA PLATAFORMA ACTUAL
-  // try/catch: en Android el plugin google-services puede auto-inicializar
-  // Firebase nativamente; si ya existe [DEFAULT], reutilizamos esa instancia
-  // en lugar de reventar y dejar la app congelada en el splash.
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
@@ -358,6 +353,11 @@ void main() async {
       rethrow;
     }
   }
+
+  // ✅ 3. INICIALIZAR APP CHECK CON MODO DEPURACIÓN (Usa el token del AndroidManifest)
+  await FirebaseAppCheck.instance.activate(
+    androidProvider: AndroidProvider.debug,
+  );
 
   await initializeDateFormatting('es_ES', null);
   await SettingsService.loadSettings();
@@ -422,7 +422,6 @@ class MyApp extends StatelessWidget {
         navigatorKey: navigatorKey,
         theme: ThemeData(primarySwatch: Colors.orange, useMaterial3: true),
         home: const AuthWrapper(),
-        // ✅ RUTA AGREGADA PARA EL PANEL DE ADMINISTRACIÓN
         routes: {
           '/admin': (context) => const AdminLoginScreen(),
         },

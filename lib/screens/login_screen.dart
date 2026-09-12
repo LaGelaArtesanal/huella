@@ -23,7 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   String? _error;
 
-  // ✅ MODIFICADO: Ahora inicializa las notificaciones push después del login
+  // ✅ LOGIN NORMAL CON EMAIL Y CONTRASEÑA
   Future<void> _login() async {
     setState(() { _isLoading = true; _error = null; });
 
@@ -36,28 +36,69 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = false);
 
     if (user != null) {
-      // ✅ NUEVO: Inicializar notificaciones push después del login exitoso
-      try {
-        final notificationService = NotificationService();
-        await notificationService.initialize(user.uid);
-        print('✅ Notificaciones inicializadas para el usuario: ${user.uid}');
-      } catch (e) {
-        print('⚠️ Error al inicializar notificaciones: $e');
-        // No bloqueamos el login si falla la notificación
-      }
-
-      Widget destination;
-      if (user.role == 'admin' || user.role == 'temp_admin') {
-        destination = AdminDashboardScreen(adminId: user.uid);
-      } else if (user.role == 'owner') {
-        destination = HomeOwnerScreen(userId: user.uid, userName: user.name);
-      } else {
-        destination = WalkerDashboardScreen(walkerId: user.uid);
-      }
-      Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => destination), (route) => false);
+      await _initializeNotifications(user.uid);
+      _navigateToRoleScreen(user);
     } else {
       setState(() => _error = 'Email o contraseña incorrectos');
     }
+  }
+
+  // ✅ NUEVO: LOGIN CON GOOGLE
+  Future<void> _loginWithGoogle() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final user = await _authService.signInWithGoogle();
+
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+
+      if (user != null) {
+        await _initializeNotifications(user.uid);
+        _navigateToRoleScreen(user);
+      } else {
+        // El usuario canceló el popup de Google, solo salimos del estado de carga
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString().replaceAll('Exception: ', '');
+        _isLoading = false;
+      });
+    }
+  }
+
+  // ✅ FUNCIÓN AUXILIAR: Inicializar notificaciones (para no repetir código)
+  Future<void> _initializeNotifications(String uid) async {
+    try {
+      final notificationService = NotificationService();
+      await notificationService.initialize(uid);
+      print('✅ Notificaciones inicializadas para el usuario: $uid');
+    } catch (e) {
+      print('⚠️ Error al inicializar notificaciones: $e');
+      // No bloqueamos el login si falla la notificación
+    }
+  }
+
+  // ✅ FUNCIÓN AUXILIAR: Navegar según el rol (para no repetir código)
+  void _navigateToRoleScreen(UserModel user) {
+    Widget destination;
+    if (user.role == 'admin' || user.role == 'temp_admin') {
+      destination = AdminDashboardScreen(adminId: user.uid);
+    } else if (user.role == 'owner') {
+      destination = HomeOwnerScreen(userId: user.uid, userName: user.name);
+    } else {
+      destination = WalkerDashboardScreen(walkerId: user.uid);
+    }
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => destination),
+      (route) => false
+    );
   }
 
   Future<void> _resetPassword() async {
@@ -81,7 +122,11 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
-          gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFFFFE0B2), Color(0xFFFF9800)]),
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFFFFE0B2), Color(0xFFFF9800)]
+          ),
         ),
         child: SafeArea(
           child: Center(
@@ -92,7 +137,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 children: [
                   Container(
                     padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4))]),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 4))]
+                    ),
                     child: const Icon(Icons.pets, size: 80, color: Colors.orange),
                   ),
                   const SizedBox(height: 24),
@@ -100,22 +149,69 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 8),
                   Text('Paseos felices para tu mejor amigo', style: GoogleFonts.poppins(color: Colors.white.withOpacity(0.95), fontSize: 16), textAlign: TextAlign.center),
                   const SizedBox(height: 40),
+
                   _buildTextField(_emailController, 'Email', Icons.email, keyboardType: TextInputType.emailAddress),
                   const SizedBox(height: 16),
                   _buildTextField(_passwordController, 'Contraseña', Icons.lock, obscureText: true),
-                  Align(alignment: Alignment.centerRight, child: TextButton(onPressed: _resetPassword, child: const Text('¿Olvidaste tu contraseña?', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)))),
-                  if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))],
+
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _resetPassword,
+                      child: const Text('¿Olvidaste tu contraseña?', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600))
+                    )
+                  ),
+
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                  ],
+
                   const SizedBox(height: 24),
+
+                  // Botón de Login Normal
                   SizedBox(
                     width: double.infinity, height: 50,
                     child: ElevatedButton(
                       onPressed: _isLoading ? null : _login,
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.deepOrange, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                      child: _isLoading ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Iniciar sesión', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.deepOrange,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+                      ),
+                      child: _isLoading
+                        ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Iniciar sesión', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ),
+
                   const SizedBox(height: 16),
-                  TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoleSelectionScreen())), child: const Text('¿No tienes cuenta? Regístrate', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
+
+                  // ✅ NUEVO: Botón de Login con Google
+                  ElevatedButton.icon(
+                    onPressed: _isLoading ? null : _loginWithGoogle,
+                    icon: const Icon(Icons.login, color: Colors.blue), // Puedes cambiar esto por Image.asset('assets/google_logo.png') si prefieres
+                    label: const Text(
+                      'Continuar con Google',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.black87,
+                      minimumSize: const Size(double.infinity, 50),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: const BorderSide(color: Colors.grey, width: 1),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  TextButton(
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RoleSelectionScreen())),
+                    child: const Text('¿No tienes cuenta? Regístrate', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600))
+                  ),
                 ],
               ),
             ),
@@ -128,7 +224,17 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool obscureText = false, TextInputType keyboardType = TextInputType.text}) {
     return Container(
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
-      child: TextField(controller: controller, obscureText: obscureText, keyboardType: keyboardType, decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: Colors.orange), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16))),
+      child: TextField(
+        controller: controller,
+        obscureText: obscureText,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon, color: Colors.orange),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16)
+        )
+      ),
     );
   }
 }

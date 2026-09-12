@@ -28,6 +28,11 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
+        <!-- ✅ TOKEN DE DEPURACIÓN DE APP CHECK (Para que el emulador/celular de prueba sea reconocido) -->
+        <meta-data
+            android:name="firebase_app_check_debug_token"
+            android:value="75969FB6-A9D9-4AFB-B2D9-E6C41DB67A7B" />
+
         <!-- API KEY DE GOOGLE MAPS -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
